@@ -54,11 +54,16 @@ litellm.suppress_debug_info = True
 # of the `anthropic/` / `openai/` prefixes for direct API access. For HF ids,
 # append ":fastest" / ":cheapest" / ":preferred" / ":<provider>" to override
 # the default routing policy (auto = fastest with failover).
+# Local models are supported via ollama/lmstudio/jan prefixes — see llm_params.
 SUGGESTED_MODELS = [
     {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
-    {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
-    {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
-    {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
+    {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7 (HF router)"},
+    {"id": "minimax/MiniMax-M2.7", "label": "MiniMax M2.7 (direct, needs MINIMAX_API_KEY)"},
+    {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6 (HF router)"},
+    {"id": "zai-org/GLM-5.1", "label": "GLM 5.1 (HF router)"},
+    {"id": "zai/GLM-5.1", "label": "GLM 5.1 (direct, needs ZAI_API_KEY)"},
+    {"id": "ollama/llama3.2", "label": "Ollama: llama3.2 (local)"},
+    {"id": "lmstudio/llama3.2", "label": "LM Studio: llama3.2 (local)"},
 ]
 
 
@@ -70,14 +75,29 @@ def _is_valid_model_id(model_id: str) -> bool:
       • openai/<model>
       • <org>/<model>[:<tag>]            (HF router; tag = provider or policy)
       • huggingface/<org>/<model>[:<tag>] (same, accepts legacy prefix)
+      • ollama/<model>                    (local Ollama)
+      • lmstudio/<model>                  (local LM Studio)
+      • jan/<model>                       (local Jan)
+      • minimax/<model>                   (MiniMax direct, needs MINIMAX_API_KEY)
+      • zai/<model>                       (Z.ai direct, needs ZAI_API_KEY)
 
     Actual availability is verified against the HF router catalog on switch,
     or by the provider on first call.
     """
+    from agent.core.llm_params import _LOCAL_PROVIDER_REGISTRY
+
     if not model_id or "/" not in model_id:
         return False
     # Strip :tag suffix before structural check
     head = model_id.split(":", 1)[0]
+
+
+    # Local providers — any non-empty model name after the prefix is valid
+    for prefix in _LOCAL_PROVIDER_REGISTRY:
+        if head.lower().startswith(prefix + "/"):
+            bare = head[len(prefix) + 1:]
+            return bool(bare)
+
     parts = head.split("/")
     return len(parts) >= 2 and all(parts)
 
@@ -102,11 +122,41 @@ def _print_model_preflight(model_id: str, console) -> None:
     For unknown HF ids we print a red warning with fuzzy suggestions but
     still allow the switch (the catalog might be lagging).
     """
+    from agent.core import hf_router_catalog as cat
+    from agent.core.llm_params import _LOCAL_PROVIDER_REGISTRY, _PROVIDER_OVERRIDES, _PROVIDER_KEYS
+
     if model_id.startswith(("anthropic/", "openai/")):
         console.print(f"[green]Model switched to {model_id}[/green]")
         return
 
-    from agent.core import hf_router_catalog as cat
+    # Check provider overrides (MiniMax / Z.ai via Anthropic-compatible endpoints)
+    for model_prefix, (api_base, prov_key) in _PROVIDER_OVERRIDES.items():
+        stripped = model_id.removeprefix("huggingface/")
+        if stripped.startswith(model_prefix):
+            api_key = _PROVIDER_KEYS.get(prov_key, "")
+            key_status = "✅ set" if api_key else "⚠️  NOT SET"
+            console.print(f"[green]Model switched to {model_id}[/green]")
+            console.print(
+                f"  [dim]via Anthropic-compatible endpoint: {api_base}[/dim]"
+            )
+            console.print(
+                f"  [dim]{prov_key.title()} API key: {key_status}[/dim]"
+            )
+            if not api_key:
+                console.print(
+                    f"  [bold yellow]⚠️  Set {prov_key.upper()}_API_KEY to authenticate.[/bold yellow]"
+                )
+            return
+
+    # Check local provider registry (case-insensitive)
+    for prefix in _LOCAL_PROVIDER_REGISTRY:
+        if model_id.lower().startswith(prefix + "/"):
+            provider = _LOCAL_PROVIDER_REGISTRY[prefix]
+            console.print(f"[green]Model switched to {model_id}[/green]")
+            console.print(
+                f"  [dim]local {prefix} at {provider.api_base}[/dim]"
+            )
+            return
 
     bare, _, tag = model_id.partition(":")
     info = cat.lookup(bare)
