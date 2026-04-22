@@ -50,6 +50,8 @@ from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
 from agent.tools.research_tool import RESEARCH_TOOL_SPEC, research_handler
 from agent.tools.sandbox_tool import get_sandbox_tools
+from agent.tools.codex_tool import CODEX_LOGIN_TOOL_SPEC, codex_login_handler
+from agent.tools.hf_catalog_tool import HF_CATALOG_TOOL_SPEC, hf_catalog_handler
 
 # NOTE: Private HF repo tool disabled - replaced by hf_repo_files and hf_repo_git
 # from agent.tools.private_hf_repo_tools import (
@@ -360,6 +362,20 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             description=GITHUB_READ_FILE_TOOL_SPEC["description"],
             parameters=GITHUB_READ_FILE_TOOL_SPEC["parameters"],
             handler=github_read_file_handler,
+        ),
+        # OpenAI Codex OAuth / session management
+        ToolSpec(
+            name=CODEX_LOGIN_TOOL_SPEC["name"],
+            description=CODEX_LOGIN_TOOL_SPEC["description"],
+            parameters=CODEX_LOGIN_TOOL_SPEC["parameters"],
+            handler=codex_login_handler,
+        ),
+        # HF Inference Router catalog browser
+        ToolSpec(
+            name=HF_CATALOG_TOOL_SPEC["name"],
+            description=HF_CATALOG_TOOL_SPEC["description"],
+            parameters=HF_CATALOG_TOOL_SPEC["parameters"],
+            handler=hf_catalog_handler,
         ),
     ]
 
