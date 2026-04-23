@@ -96,6 +96,10 @@ class AgentSession:
     is_active: bool = True
     is_processing: bool = False  # True while a submission is being executed
     broadcaster: Any = None
+    # True once this session has been counted against the user's daily
+    # Claude quota. Guards double-counting when the user re-selects an
+    # Anthropic model mid-session.
+    claude_counted: bool = False
 
 
 class SessionCapacityError(Exception):
@@ -428,6 +432,7 @@ class SessionManager:
         self,
         user_id: str = "dev",
         hf_token: str | None = None,
+        model: str | None = None,
         local_mode: bool | None = None,
         provider_keys: dict[str, str] | None = None,
     ) -> str:
@@ -439,6 +444,10 @@ class SessionManager:
 
         Args:
             user_id: The ID of the user who owns this session.
+            hf_token: The user's HF OAuth token, stored for tool execution.
+            model: Optional model override. When set, replaces ``model_name``
+                on the per-session config clone. None falls back to the
+                config default.
             local_mode: Override execution mode for this session.
                 True => local host tools (no sandbox_create),
                 False => sandbox tools, None => use server default.
@@ -492,6 +501,8 @@ class SessionManager:
             # Deep-copy config so each session's model switches independently —
             # tab A picking GLM doesn't flip tab B off Claude.
             session_config = self.config.model_copy(deep=True)
+            if model:
+                session_config.model_name = model
             session = Session(
                 event_queue,
                 config=session_config,
