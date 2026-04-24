@@ -1,0 +1,41 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          prompt: |
+            Review this pull request against the main branch. Focus on:
+            - Correctness and likely bugs
+            - Security issues (auth, input validation, secrets, injection)
+            - Performance regressions, especially in the agent loop and streaming paths
+            - Breakages in LiteLLM / Bedrock routing (model ids, params, prompt caching)
+            - Test coverage for new behavior
+            - Backend/frontend contract drift (FastAPI routes ↔ React client)
+
+            Be concise. Prefer inline comments over long summaries. Skip nitpicks on
+            style that ruff already catches. If the PR looks good, say so briefly
+            instead of inventing issues.
