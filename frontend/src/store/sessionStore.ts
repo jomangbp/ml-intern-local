@@ -127,6 +127,27 @@ export const useSessionStore = create<SessionStore>()(
         sessions: state.sessions,
         activeSessionId: state.activeSessionId,
       }),
+      merge: (persistedState, currentState) => {
+        const persisted = (persistedState ?? {}) as Partial<SessionStore>;
+        const sessions = Array.isArray(persisted.sessions)
+          ? persisted.sessions.filter(
+              (s): s is SessionMeta =>
+                !!s && typeof s.id === 'string' && s.id.length > 0,
+            )
+          : [];
+
+        const activeSessionId =
+          persisted.activeSessionId && sessions.some((s) => s.id === persisted.activeSessionId)
+            ? persisted.activeSessionId
+            : sessions[sessions.length - 1]?.id ?? null;
+
+        return {
+          ...currentState,
+          ...persisted,
+          sessions,
+          activeSessionId,
+        };
+      },
     }
   )
 );

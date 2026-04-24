@@ -100,6 +100,7 @@ async def summarize_messages(
     max_tokens: int = 2000,
     tool_specs: list[dict] | None = None,
     prompt: str = _COMPACT_PROMPT,
+    provider_keys: dict[str, str] | None = None,
 ) -> tuple[str, int]:
     """Run a summarization prompt against a list of messages.
 
@@ -113,7 +114,12 @@ async def summarize_messages(
     from agent.core.llm_params import _resolve_llm_params
 
     prompt_messages = list(messages) + [Message(role="user", content=prompt)]
-    llm_params = _resolve_llm_params(model_name, hf_token, reasoning_effort="high")
+    llm_params = _resolve_llm_params(
+        model_name,
+        hf_token,
+        reasoning_effort="high",
+        provider_keys=provider_keys,
+    )
     response = await acompletion(
         messages=prompt_messages,
         max_completion_tokens=max_tokens,
@@ -198,7 +204,12 @@ class ContextManager:
                 f"Working directory: {cwd}\n"
                 f"Use absolute paths or paths relative to the working directory. "
                 f"Do NOT use /app/ paths — that is a sandbox convention that does not apply here.\n"
-                f"The sandbox_create tool is NOT available. Run code directly with bash."
+                f"The sandbox_create tool is NOT available.\n"
+                f"The hf_jobs tool is NOT available in local mode; do not attempt remote job launches.\n\n"
+                f"For training/experiments in local mode:\n"
+                f"- Run training directly with local bash/python commands.\n"
+                f"- If tracking is requested, install and use trackio locally (not via HF Jobs/Spaces).\n"
+                f"- Return local run instructions/log paths and any local dashboard URL generated on this machine."
             )
             static_prompt += local_context
 
@@ -343,6 +354,7 @@ class ContextManager:
         model_name: str,
         tool_specs: list[dict] | None = None,
         hf_token: str | None = None,
+        provider_keys: dict[str, str] | None = None,
     ) -> None:
         """Remove old messages to keep history under target size"""
         if not self.needs_compaction:
@@ -382,6 +394,7 @@ class ContextManager:
             max_tokens=self.compact_size,
             tool_specs=tool_specs,
             prompt=_COMPACT_PROMPT,
+            provider_keys=provider_keys,
         )
         summarized_message = Message(role="assistant", content=summary)
 

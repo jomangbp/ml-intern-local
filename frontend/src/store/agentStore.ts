@@ -48,7 +48,7 @@ export interface LLMHealthError {
 export type ActivityStatus =
   | { type: 'idle' }
   | { type: 'thinking' }
-  | { type: 'tool'; toolName: string; description?: string }
+  | { type: 'tool'; toolName: string; description?: string; toolCallId?: string }
   | { type: 'waiting-approval' }
   | { type: 'streaming' }
   | { type: 'cancelled' };
@@ -126,6 +126,9 @@ interface AgentStore {
   // Job statuses (tool_call_id -> job status) for HF jobs
   jobStatuses: Record<string, string>;
 
+  // Trackio links (tool_call_id -> trackio dashboard URL) for HF jobs
+  trackioUrls: Record<string, string>;
+
   // Tool error states (tool_call_id -> true if errored) - persisted across renders
   toolErrors: Record<string, boolean>;
 
@@ -172,6 +175,9 @@ interface AgentStore {
 
   setJobStatus: (toolCallId: string, status: string) => void;
   getJobStatus: (toolCallId: string) => string | undefined;
+
+  setTrackioUrl: (toolCallId: string, trackioUrl: string) => void;
+  getTrackioUrl: (toolCallId: string) => string | undefined;
 
   setToolError: (toolCallId: string, hasError: boolean) => void;
   getToolError: (toolCallId: string) => boolean | undefined;
@@ -257,6 +263,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   editedScripts: {},
   jobUrls: {},
   jobStatuses: {},
+  trackioUrls: {},
   toolErrors: loadToolErrors(),
   rejectedTools: loadRejectedTools(),
 
@@ -442,6 +449,16 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
   },
 
   getJobStatus: (toolCallId) => get().jobStatuses[toolCallId],
+
+  // ── Trackio URLs ────────────────────────────────────────────────────
+
+  setTrackioUrl: (toolCallId, trackioUrl) => {
+    set((state) => ({
+      trackioUrls: { ...state.trackioUrls, [toolCallId]: trackioUrl },
+    }));
+  },
+
+  getTrackioUrl: (toolCallId) => get().trackioUrls[toolCallId],
 
   // ── Tool Errors ─────────────────────────────────────────────────────
 

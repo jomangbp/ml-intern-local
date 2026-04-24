@@ -30,7 +30,7 @@ export interface SideChannelCallbacks {
   onToolCallPanel: (tool: string, args: Record<string, unknown>) => void;
   onToolOutputPanel: (tool: string, toolCallId: string, output: string, success: boolean) => void;
   onStreaming: () => void;
-  onToolRunning: (toolName: string, description?: string) => void;
+  onToolRunning: (toolName: string, description?: string, toolCallId?: string) => void;
   onInterrupted: () => void;
 }
 
@@ -40,6 +40,22 @@ export interface SideChannelCallbacks {
 let partIdCounter = 0;
 function nextPartId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++partIdCounter}`;
+}
+
+function sanitizeUrl(url: string): string {
+  return url.replace(/[)\]>,.;]+$/g, '');
+}
+
+function extractTrackioUrl(text: string): string | undefined {
+  // Prefer a Trackio Space URL when present.
+  const spaceMatch = text.match(/https:\/\/huggingface\.co\/spaces\/[^\s`'"\])]*trackio[^\s`'"\])]*/i);
+  if (spaceMatch?.[0]) return sanitizeUrl(spaceMatch[0]);
+
+  // Fallback: any URL explicitly labeled as Trackio dashboard URL.
+  const labeled = text.match(/trackio[^\n]*?(https:\/\/[^\s`'"\])]+)/i);
+  if (labeled?.[1]) return sanitizeUrl(labeled[1]);
+
+  return undefined;
 }
 
 /** Parse an SSE text stream into AgentEvent objects. */
@@ -179,7 +195,15 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           controller.enqueue({ type: 'tool-input-start', toolCallId, toolName, dynamic: true });
           controller.enqueue({ type: 'tool-input-available', toolCallId, toolName, input: args, dynamic: true });
 
-          sideChannel.onToolRunning(toolName, (args as Record<string, unknown>)?.description as string | undefined);
+          const description =
+            (args as Record<string, unknown>)?.description as string | undefined
+            || (toolName === 'bash' ? ((args as Record<string, unknown>)?.command as string | undefined) : undefined);
+
+          sideChannel.onToolRunning(
+            toolName,
+            description,
+            toolCallId,
+          );
           sideChannel.onToolCallPanel(toolName, args as Record<string, unknown>);
           break;
         }
@@ -196,6 +220,14 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           } else {
             controller.enqueue({ type: 'tool-output-error', toolCallId, errorText: output, dynamic: true });
           }
+
+          if (toolName === 'hf_jobs' && toolCallId) {
+            const trackioUrl = extractTrackioUrl(output);
+            if (trackioUrl) {
+              useAgentStore.getState().setTrackioUrl(toolCallId, trackioUrl);
+            }
+          }
+
           sideChannel.onToolOutputPanel(toolName, toolCallId, output, success);
           break;
         }
@@ -232,8 +264,11 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           if (jobUrl && tcId) {
             useAgentStore.getState().setJobUrl(tcId, jobUrl);
           }
+          if (tcId && state) {
+            useAgentStore.getState().setJobStatus(tcId, state.toUpperCase());
+          }
           if (state === 'running' && toolName) {
-            sideChannel.onToolRunning(toolName);
+            sideChannel.onToolRunning(toolName, undefined, tcId);
           }
           if (state === 'rejected' || state === 'abandoned') {
             controller.enqueue({ type: 'tool-output-denied', toolCallId: tcId });

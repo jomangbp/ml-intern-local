@@ -12,6 +12,7 @@ import { loadBackendMessages } from '@/lib/backend-message-store';
 import { loadMessages } from '@/lib/chat-message-store';
 import { uiMessagesToLLMMessages } from '@/lib/convert-llm-messages';
 import { logger } from '@/utils/logger';
+import { getPreferredExecutionMode } from '@/utils/executionMode';
 
 interface Props {
   sessionId: string;
@@ -41,7 +42,10 @@ export default function ExpiredBanner({ sessionId }: Props) {
 
       const res = await apiFetch('/api/session/restore-summary', {
         method: 'POST',
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({
+          messages,
+          execution_mode: getPreferredExecutionMode(),
+        }),
       });
       if (!res.ok) throw new Error(`restore-summary failed: ${res.status}`);
       const data = await res.json();

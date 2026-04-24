@@ -6,6 +6,13 @@ import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
 
 // Model configuration
+interface ApiModelOption {
+  id: string;
+  label: string;
+  provider: string;
+  recommended?: boolean;
+}
+
 interface ModelOption {
   id: string;
   name: string;
@@ -15,46 +22,58 @@ interface ModelOption {
   recommended?: boolean;
 }
 
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  minimax: 'MiniMax',
+  zai: 'ZAI',
+  huggingface: 'Hugging Face Router',
+};
+
+const PROVIDER_AVATAR: Record<string, string> = {
+  anthropic: 'https://huggingface.co/api/avatars/Anthropic',
+  openai: 'https://huggingface.co/api/avatars/openai',
+  minimax: 'https://huggingface.co/api/avatars/MiniMaxAI',
+  zai: 'https://huggingface.co/api/avatars/zai-org',
+  huggingface: 'https://huggingface.co/front/assets/huggingface_logo-noborder.svg',
+};
+
 const getHfAvatarUrl = (modelId: string) => {
   const org = modelId.split('/')[0];
   return `https://huggingface.co/api/avatars/${org}`;
 };
 
-const MODEL_OPTIONS: ModelOption[] = [
-  {
-    id: 'claude-opus',
-    name: 'Claude Opus 4.6',
-    description: 'Anthropic',
-    modelPath: 'anthropic/claude-opus-4-6',
-    avatarUrl: 'https://huggingface.co/api/avatars/Anthropic',
-    recommended: true,
-  },
-  {
-    id: 'minimax-m2.7',
-    name: 'MiniMax M2.7',
-    description: 'Novita',
-    modelPath: 'MiniMaxAI/MiniMax-M2.7',
-    avatarUrl: getHfAvatarUrl('MiniMaxAI/MiniMax-M2.7'),
-    recommended: true,
-  },
-  {
-    id: 'kimi-k2.6',
-    name: 'Kimi K2.6',
-    description: 'Novita',
-    modelPath: 'moonshotai/Kimi-K2.6',
-    avatarUrl: getHfAvatarUrl('moonshotai/Kimi-K2.6'),
-  },
-  {
-    id: 'glm-5.1',
-    name: 'GLM 5.1',
-    description: 'Together',
-    modelPath: 'zai-org/GLM-5.1',
-    avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
-  },
+const FALLBACK_API_MODELS: ApiModelOption[] = [
+  { id: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6', provider: 'anthropic', recommended: true },
+  { id: 'MiniMaxAI/MiniMax-M2.7', label: 'MiniMax M2.7', provider: 'minimax', recommended: true },
+  { id: 'openai/gpt-5.3', label: 'GPT-5.3', provider: 'openai' },
+  { id: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
+  { id: 'openai/gpt-5.4-codex', label: 'GPT-5.4 Codex', provider: 'openai' },
+  { id: 'moonshotai/Kimi-K2.6', label: 'Kimi K2.6', provider: 'huggingface' },
+  { id: 'zai-org/GLM-5.1', label: 'GLM 5.1', provider: 'zai' },
 ];
 
-const findModelByPath = (path: string): ModelOption | undefined => {
-  return MODEL_OPTIONS.find(m => m.modelPath === path || path?.includes(m.id));
+const apiModelToOption = (m: ApiModelOption): ModelOption => {
+  const provider = (m.provider || '').toLowerCase();
+  let avatarUrl = PROVIDER_AVATAR[provider] || '';
+
+  // Prefer provider logos for OpenAI/Anthropic; use org avatar for HF-router ids.
+  if (!avatarUrl || provider === 'huggingface') {
+    avatarUrl = getHfAvatarUrl(m.id);
+  }
+
+  return {
+    id: m.id,
+    name: m.label || m.id,
+    description: PROVIDER_LABEL[provider] || m.provider || 'Model provider',
+    modelPath: m.id,
+    avatarUrl,
+    recommended: !!m.recommended,
+  };
+};
+
+const findModelByPath = (path: string, options: ModelOption[]): ModelOption | undefined => {
+  return options.find(m => m.modelPath === path || m.id === path);
 };
 
 interface ChatInputProps {
@@ -69,8 +88,31 @@ interface ChatInputProps {
 export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_OPTIONS[0].id);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>(() => FALLBACK_API_MODELS.map(apiModelToOption));
+  const [selectedModelPath, setSelectedModelPath] = useState<string>(FALLBACK_API_MODELS[0].id);
   const [modelAnchorEl, setModelAnchorEl] = useState<null | HTMLElement>(null);
+
+  // Load server-provided model list so UI stays in sync with backend config.
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/config/model')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const available = Array.isArray(data.available) ? data.available as ApiModelOption[] : [];
+        const options = (available.length ? available : FALLBACK_API_MODELS).map(apiModelToOption);
+        setModelOptions(options);
+
+        const currentPath = typeof data.current === 'string' ? data.current : null;
+        if (currentPath) {
+          const current = findModelByPath(currentPath, options);
+          setSelectedModelPath(current ? current.modelPath : currentPath);
+        }
+      })
+      .catch(() => { /* ignore; fallback list remains */ });
+
+    return () => { cancelled = true; };
+  }, []);
 
   // Model is per-session: fetch this tab's current model every time the
   // session changes. Other tabs keep their own selections independently.
@@ -81,16 +123,19 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled) return;
-        if (data?.model) {
-          const model = findModelByPath(data.model);
-          if (model) setSelectedModelId(model.id);
+        if (data?.model && typeof data.model === 'string') {
+          const model = findModelByPath(data.model, modelOptions);
+          setSelectedModelPath(model ? model.modelPath : data.model);
         }
       })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
-  }, [sessionId]);
+  }, [sessionId, modelOptions]);
 
-  const selectedModel = MODEL_OPTIONS.find(m => m.id === selectedModelId) || MODEL_OPTIONS[0];
+  const selectedModel =
+    modelOptions.find(m => m.modelPath === selectedModelPath)
+    || modelOptions[0]
+    || apiModelToOption(FALLBACK_API_MODELS[0]);
 
   // Auto-focus the textarea when the session becomes ready
   useEffect(() => {
@@ -132,7 +177,7 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
         method: 'POST',
         body: JSON.stringify({ model: model.modelPath }),
       });
-      if (res.ok) setSelectedModelId(model.id);
+      if (res.ok) setSelectedModelPath(model.modelPath);
     } catch { /* ignore */ }
   };
 
@@ -298,11 +343,11 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
             }
           }}
         >
-          {MODEL_OPTIONS.map((model) => (
+          {modelOptions.map((model) => (
             <MenuItem
               key={model.id}
               onClick={() => handleSelectModel(model)}
-              selected={selectedModelId === model.id}
+              selected={selectedModelPath === model.modelPath}
               sx={{
                 py: 1.5,
                 '&.Mui-selected': {

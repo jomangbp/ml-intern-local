@@ -1,4 +1,4 @@
-import { Box, Typography } from '@mui/material';
+import { Box, Link, Stack, Typography } from '@mui/material';
 import { keyframes } from '@mui/system';
 import { useAgentStore, type ActivityStatus } from '@/store/agentStore';
 
@@ -20,6 +20,8 @@ const TOOL_LABELS: Record<string, string> = {
   research: 'Researching',
 };
 
+const RUNNING_JOB_STATES = new Set(['RUNNING', 'PENDING', 'QUEUED', 'STARTING']);
+
 /** Format raw research log into a clean status label. */
 function formatResearchStatus(raw: string): string {
   const s = raw.replace(/^▸\s*/, '');
@@ -34,11 +36,9 @@ function formatResearchStatus(raw: string): string {
         if (typeof v === 'string') args[k] = v;
       }
     } catch {
-      // JSON is likely truncated — extract complete "key": "value" pairs
       for (const m of jsonStr.matchAll(/"(\w+)":\s*"([^"]*)"/g)) {
         args[m[1]] = m[2];
       }
-      // Also try to extract a truncated value for known keys if not found yet
       if (!args.query && !args.arxiv_id) {
         const partial = jsonStr.match(/"(query|arxiv_id)":\s*"([^"]*)/);
         if (partial) args[partial[1]] = partial[2];
@@ -96,11 +96,28 @@ function formatResearchStatus(raw: string): string {
   return 'Researching';
 }
 
-function statusLabel(status: ActivityStatus): string {
+function findLatestRunningJobToolCallId(jobStatuses: Record<string, string>): string | null {
+  const entries = Object.entries(jobStatuses);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const [toolCallId, status] = entries[i];
+    if (RUNNING_JOB_STATES.has((status || '').toUpperCase())) {
+      return toolCallId;
+    }
+  }
+  return null;
+}
+
+function statusLabel(status: ActivityStatus, jobStatus?: string): string {
   switch (status.type) {
     case 'thinking': return 'Thinking';
     case 'streaming': return 'Writing';
     case 'tool': {
+      if (status.toolName === 'hf_jobs') {
+        if (!jobStatus || RUNNING_JOB_STATES.has(jobStatus)) {
+          return 'Training job is running on HF';
+        }
+        return `Training job ${jobStatus.toLowerCase()}`;
+      }
       if (status.toolName === 'research' && status.description) {
         return formatResearchStatus(status.description);
       }
@@ -117,14 +134,29 @@ function statusLabel(status: ActivityStatus): string {
 }
 
 export default function ActivityStatusBar() {
-  const activityStatus = useAgentStore(s => s.activityStatus);
+  // IMPORTANT: keep selectors stable (no object literal selector) to avoid
+  // React #185 "Maximum update depth exceeded" with useSyncExternalStore.
+  const activityStatus = useAgentStore((s) => s.activityStatus);
+  const jobUrls = useAgentStore((s) => s.jobUrls);
+  const jobStatuses = useAgentStore((s) => s.jobStatuses);
+  const trackioUrls = useAgentStore((s) => s.trackioUrls);
 
   if (activityStatus.type === 'idle') return null;
 
-  const label = statusLabel(activityStatus);
+  const isHfJob = activityStatus.type === 'tool' && activityStatus.toolName === 'hf_jobs';
+  const activeJobToolCallId = isHfJob
+    ? (activityStatus.toolCallId || findLatestRunningJobToolCallId(jobStatuses))
+    : null;
+
+  const jobStatus = activeJobToolCallId ? (jobStatuses[activeJobToolCallId] || undefined) : undefined;
+  const jobStatusUpper = jobStatus?.toUpperCase();
+  const jobUrl = activeJobToolCallId ? jobUrls[activeJobToolCallId] : undefined;
+  const trackioUrl = activeJobToolCallId ? trackioUrls[activeJobToolCallId] : undefined;
+
+  const label = statusLabel(activityStatus, jobStatusUpper);
 
   return (
-    <Box sx={{ px: 2, py: 0.5, minHeight: 28, display: 'flex', alignItems: 'center' }}>
+    <Box sx={{ px: 2, py: 0.5, minHeight: 28, display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
       <Typography
         sx={{
           fontFamily: 'monospace',
@@ -141,6 +173,33 @@ export default function ActivityStatusBar() {
       >
         {label}{activityStatus.type !== 'cancelled' && '…'}
       </Typography>
+
+      {isHfJob && (jobUrl || trackioUrl) && (
+        <Stack direction="row" spacing={1.5} sx={{ mt: 0.15, pl: 0.1 }}>
+          {jobUrl && (
+            <Link
+              href={jobUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              underline="hover"
+              sx={{ fontFamily: 'monospace', fontSize: '0.67rem', color: 'var(--accent-yellow)' }}
+            >
+              HF Job
+            </Link>
+          )}
+          {trackioUrl && (
+            <Link
+              href={trackioUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              underline="hover"
+              sx={{ fontFamily: 'monospace', fontSize: '0.67rem', color: 'var(--accent-green)' }}
+            >
+              Trackio
+            </Link>
+          )}
+        </Stack>
+      )}
     </Box>
   );
 }

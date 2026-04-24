@@ -8,7 +8,7 @@ function App() {
   useAuth();
 
   return (
-    <Box sx={{ height: '100vh', display: 'flex' }}>
+    <Box sx={{ height: '100vh', minHeight: '100dvh', display: 'flex', width: '100%' }}>
       <AppLayout />
     </Box>
   );

@@ -517,7 +517,20 @@ function InlineApproval({
 const EMPTY_AGENTS: Record<string, ResearchAgentState> = {};
 
 export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProps) {
-  const { setPanel, lockPanel, getJobUrl, getEditedScript, setJobStatus, getJobStatus, setToolError, getToolError, setToolRejected, getToolRejected } = useAgentStore();
+  const {
+    setPanel,
+    lockPanel,
+    getJobUrl,
+    getEditedScript,
+    setJobStatus,
+    getJobStatus,
+    setTrackioUrl,
+    getTrackioUrl,
+    setToolError,
+    getToolError,
+    setToolRejected,
+    getToolRejected,
+  } = useAgentStore();
   const researchAgents = useAgentStore(s => {
     const activeId = s.activeSessionId;
     return (activeId && s.sessionStates[activeId]?.researchAgents) || EMPTY_AGENTS;
@@ -795,15 +808,34 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
   }, [tools, lockedToolId, showToolPanel]);
 
   // ── Parse hf_jobs metadata from output ────────────────────────────
-  function parseJobMeta(output: unknown): { jobUrl?: string; jobStatus?: string } {
+  function parseJobMeta(output: unknown): { jobUrl?: string; jobStatus?: string; trackioUrl?: string } {
     if (typeof output !== 'string') return {};
     const urlMatch = output.match(/\*\*View at:\*\*\s*(https:\/\/[^\s\n]+)/);
     const statusMatch = output.match(/\*\*Final Status:\*\*\s*([^\n]+)/);
+    const trackioMatch = output.match(/https:\/\/huggingface\.co\/spaces\/[^\s`'"\])]*trackio[^\s`'"\])]*/i);
     return {
       jobUrl: urlMatch?.[1],
       jobStatus: statusMatch?.[1]?.trim(),
+      trackioUrl: trackioMatch?.[0]?.replace(/[)\]>,.;]+$/g, ''),
     };
   }
+
+  // Sync parsed hf_jobs metadata into store (outside render to avoid setState loops).
+  useEffect(() => {
+    for (const tool of tools) {
+      if (tool.toolName !== 'hf_jobs') continue;
+      const rawOutput = tool.output ?? (tool as Record<string, unknown>).errorText;
+      if (!rawOutput) continue;
+
+      const meta = parseJobMeta(rawOutput);
+      if (meta.jobStatus && !getJobStatus(tool.toolCallId)) {
+        setJobStatus(tool.toolCallId, meta.jobStatus);
+      }
+      if (meta.trackioUrl && !getTrackioUrl(tool.toolCallId)) {
+        setTrackioUrl(tool.toolCallId, meta.trackioUrl);
+      }
+    }
+  }, [tools, getJobStatus, setJobStatus, getTrackioUrl, setTrackioUrl]);
 
   // ── Render ────────────────────────────────────────────────────────
   const decidedCount = pendingTools.filter(t => decisions[t.toolCallId]).length;
@@ -905,21 +937,17 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
           // Parse job metadata from hf_jobs output and store
           const jobUrlFromStore = tool.toolName === 'hf_jobs' ? getJobUrl(tool.toolCallId) : undefined;
           const jobStatusFromStore = tool.toolName === 'hf_jobs' ? getJobStatus(tool.toolCallId) : undefined;
+          const trackioUrlFromStore = tool.toolName === 'hf_jobs' ? getTrackioUrl(tool.toolCallId) : undefined;
 
           const jobMetaFromOutput = tool.toolName === 'hf_jobs' && (tool.output || (tool as Record<string, unknown>).errorText)
             ? parseJobMeta(tool.output ?? (tool as Record<string, unknown>).errorText)
             : {};
 
-          // Store job status if we just parsed it and don't have it stored yet
-          if (tool.toolName === 'hf_jobs' && jobMetaFromOutput.jobStatus && !jobStatusFromStore) {
-            setJobStatus(tool.toolCallId, jobMetaFromOutput.jobStatus);
-          }
-
-          // Combine job URL and status from store (persisted) with output metadata (freshly parsed)
-          // Prefer stored values to ensure they persist across renders
+          // Combine persisted metadata with freshly parsed metadata
           const jobMeta = {
             jobUrl: jobUrlFromStore || jobMetaFromOutput.jobUrl,
             jobStatus: jobStatusFromStore || jobMetaFromOutput.jobStatus,
+            trackioUrl: trackioUrlFromStore || jobMetaFromOutput.trackioUrl,
           };
 
           return (
@@ -1030,7 +1058,7 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
                   />
                 )}
 
-                {/* View on HF link — single place, shown whenever URL is available */}
+                {/* HF + Trackio links */}
                 {tool.toolName === 'hf_jobs' && jobMeta.jobUrl && (
                   <Link
                     href={jobMeta.jobUrl}
@@ -1050,6 +1078,28 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
                   >
                     <LaunchIcon sx={{ fontSize: 12 }} />
                     View on HF
+                  </Link>
+                )}
+
+                {tool.toolName === 'hf_jobs' && jobMeta.trackioUrl && (
+                  <Link
+                    href={jobMeta.trackioUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    sx={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      color: 'var(--accent-green)',
+                      fontSize: '0.68rem',
+                      textDecoration: 'none',
+                      ml: 0.5,
+                      '&:hover': { textDecoration: 'underline' },
+                    }}
+                  >
+                    <LaunchIcon sx={{ fontSize: 12 }} />
+                    Trackio
                   </Link>
                 )}
 

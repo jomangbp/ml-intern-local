@@ -19,6 +19,7 @@ import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
+import { getPreferredExecutionMode } from '@/utils/executionMode';
 
 interface SessionSidebarProps {
   onClose?: () => void;
@@ -39,7 +40,10 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
     setIsCreatingSession(true);
     setCapacityError(null);
     try {
-      const response = await apiFetch('/api/session', { method: 'POST' });
+      const response = await apiFetch('/api/session', {
+        method: 'POST',
+        body: JSON.stringify({ execution_mode: getPreferredExecutionMode() }),
+      });
       if (response.status === 503) {
         const data = await response.json();
         setCapacityError(data.detail || 'Server is at capacity.');
@@ -87,7 +91,10 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
     // If this was the last session, create a new one
     if (isLastSession) {
       try {
-        const response = await apiFetch('/api/session', { method: 'POST' });
+        const response = await apiFetch('/api/session', {
+          method: 'POST',
+          body: JSON.stringify({ execution_mode: getPreferredExecutionMode() }),
+        });
         if (response.ok) {
           const data = await response.json();
           createSession(data.session_id);

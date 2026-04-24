@@ -326,6 +326,8 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             parameters=PLAN_TOOL_SPEC["parameters"],
             handler=plan_tool_handler,
         ),
+        # hf_jobs is intentionally excluded in local mode (see below)
+        # so training/experiments run directly on the host machine via bash.
         ToolSpec(
             name=HF_JOBS_TOOL_SPEC["name"],
             description=HF_JOBS_TOOL_SPEC["description"],
@@ -382,7 +384,12 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
     # Sandbox or local tools (highest priority)
     if local_mode:
         from agent.tools.local_tools import get_local_tools
-        tools = get_local_tools() + tools
+        from agent.tools.local_training_tool import get_local_training_tool
+        # Local mode is strictly host-execution mode:
+        # - use local bash/read/write/edit
+        # - use local_training for experiment jobs (no hf_jobs — no HF Spaces)
+        tools = [t for t in tools if t.name != HF_JOBS_TOOL_SPEC["name"]]
+        tools = get_local_tools() + [get_local_training_tool()] + tools
     else:
         tools = get_sandbox_tools() + tools
 

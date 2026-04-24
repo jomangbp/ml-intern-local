@@ -250,6 +250,7 @@ async def research_handler(
         research_model,
         getattr(session, "hf_token", None),
         reasoning_effort=getattr(session.config, "reasoning_effort", None),
+        provider_keys=getattr(session, "provider_keys", None),
     )
 
     # Get read-only tool specs from the session's tool router

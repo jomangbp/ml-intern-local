@@ -86,6 +86,7 @@ class SessionInfo(BaseModel):
     user_id: str = "dev"
     pending_approval: list[PendingApprovalTool] | None = None
     model: str | None = None
+    execution_mode: str | None = None
 
 
 class HealthResponse(BaseModel):

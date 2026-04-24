@@ -77,10 +77,12 @@ class Session:
         tool_router=None,
         context_manager: ContextManager | None = None,
         hf_token: str | None = None,
+        provider_keys: dict[str, str] | None = None,
         local_mode: bool = False,
         stream: bool = True,
     ):
         self.hf_token: Optional[str] = hf_token
+        self.provider_keys: dict[str, str] = provider_keys or {}
         self.tool_router = tool_router
         self.stream = stream
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []

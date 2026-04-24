@@ -152,6 +152,23 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         if (!STREAMABLE_TOOLS.has(tool)) return;
 
         const sessState = useAgentStore.getState().getSessionState(sessionId);
+
+        // Expose Trackio link as soon as it's seen in streaming hf_jobs logs.
+        if (tool === 'hf_jobs') {
+          const trackioMatch = log.match(/https:\/\/huggingface\.co\/spaces\/[^\s`'"\])]*trackio[^\s`'"\])]*/i);
+          if (trackioMatch?.[0]) {
+            const currentToolCallId =
+              sessState.activityStatus.type === 'tool' && sessState.activityStatus.toolName === 'hf_jobs'
+                ? sessState.activityStatus.toolCallId
+                : undefined;
+            if (currentToolCallId) {
+              useAgentStore
+                .getState()
+                .setTrackioUrl(currentToolCallId, trackioMatch[0].replace(/[)\]>,.;]+$/g, ''));
+            }
+          }
+        }
+
         const existingOutput = sessState.panelData?.output?.content || '';
 
         const newContent = existingOutput
@@ -282,9 +299,9 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       onStreaming: () => {
         updateSession(sessionId, { activityStatus: { type: 'streaming' } });
       },
-      onToolRunning: (toolName: string, description?: string) => {
+      onToolRunning: (toolName: string, description?: string, toolCallId?: string) => {
         const updates: Partial<import('@/store/agentStore').PerSessionState> = {
-          activityStatus: { type: 'tool', toolName, description },
+          activityStatus: { type: 'tool', toolName, description, toolCallId },
         };
         // Clear research steps + stats when a new research call starts
         if (toolName === 'research') {
@@ -518,9 +535,12 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
               else if (et === 'assistant_chunk') sideChannel.onStreaming();
               else if (et === 'tool_call') {
                 const t = event.data?.tool as string;
+                const tcId = event.data?.tool_call_id as string | undefined;
+                const args = (event.data?.arguments || {}) as Record<string, unknown>;
                 const d = event.data?.arguments?.description as string | undefined;
-                sideChannel.onToolRunning(t, d);
-                sideChannel.onToolCallPanel(t, (event.data?.arguments || {}) as Record<string, unknown>);
+                const description = d || (t === 'bash' ? (args.command as string | undefined) : undefined);
+                sideChannel.onToolRunning(t, description, tcId);
+                sideChannel.onToolCallPanel(t, args);
               } else if (et === 'tool_output') {
                 sideChannel.onToolOutputPanel(
                   event.data?.tool as string,
@@ -531,7 +551,8 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
               } else if (et === 'tool_state_change') {
                 const state = event.data?.state as string;
                 const toolName = event.data?.tool as string;
-                if (state === 'running' && toolName) sideChannel.onToolRunning(toolName);
+                const tcId = event.data?.tool_call_id as string | undefined;
+                if (state === 'running' && toolName) sideChannel.onToolRunning(toolName, undefined, tcId);
               } else if (et === 'turn_complete' || et === 'error' || et === 'interrupted') {
                 sideChannel.onProcessingDone();
                 stopReconnect();
