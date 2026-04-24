@@ -64,6 +64,15 @@ ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
 
+### Local Option (UI Execution Mode)
+
+This local fork includes a **Local option** in the UI (`Local: ON/OFF`) for new sessions.
+
+- `Local: ON` → runs tools on your host machine/workspace (local execution mode)
+- `Local: OFF` → uses sandbox-style execution mode
+
+Use this when you want fully local workflows, local files, and local training/debug loops.
+
 ## Architecture
 
 ### Component Overview
