@@ -13,6 +13,11 @@ import httpx
 from dependencies import AUTH_ENABLED, check_org_membership, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from litellm import acompletion
+
+from agent.core.llm_params import _resolve_llm_params
+from agent.tools.codex_tool import codex_auth_status, codex_login_handler
+from session_manager import session_manager
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -186,3 +191,155 @@ async def org_membership(
         return {"is_member": False}
     is_member = await check_org_membership(token, ORG_NAME)
     return {"is_member": is_member}
+
+
+@router.get("/codex/status")
+async def codex_status(user: dict = Depends(get_current_user)) -> dict:
+    """Get Codex CLI OAuth status for the current machine."""
+    return codex_auth_status()
+
+
+@router.post("/codex/login")
+async def codex_login(body: dict | None = None, user: dict = Depends(get_current_user)) -> dict:
+    """Initiate/verify Codex OAuth device flow and return status + message."""
+    force = bool((body or {}).get("force", False))
+    message, ok = await codex_login_handler({"force": force})
+    status = codex_auth_status()
+    return {
+        "ok": ok,
+        "message": message,
+        **status,
+    }
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 6:
+        return "*" * len(value)
+    return ("*" * (len(value) - 4)) + value[-4:]
+
+
+@router.get("/providers/status")
+async def provider_status(user: dict = Depends(get_current_user)) -> dict:
+    """Return whether provider API tokens are configured for this user.
+
+    Includes env fallback so users who already configured MINIMAX_API_KEY /
+    ZAI_API_KEY see "configured" immediately (similar to Codex status).
+    """
+    user_keys = session_manager.get_user_provider_keys(user["user_id"])
+    effective = session_manager.get_effective_provider_keys(user["user_id"])
+
+    minimax = effective.get("minimax", "")
+    zai = effective.get("zai", "")
+
+    return {
+        "workspace_env_file": session_manager.get_user_workspace_env_file(user["user_id"]),
+        "minimax": {
+            "configured": bool(minimax),
+            "masked": _mask_secret(minimax),
+            "source": "user" if user_keys.get("minimax") else ("env" if minimax else "none"),
+        },
+        "zai": {
+            "configured": bool(zai),
+            "masked": _mask_secret(zai),
+            "source": "user" if user_keys.get("zai") else ("env" if zai else "none"),
+        },
+    }
+
+
+@router.post("/providers/tokens")
+async def set_provider_tokens(body: dict | None = None, user: dict = Depends(get_current_user)) -> dict:
+    """Set/clear per-user provider tokens for MiniMax and ZAI.
+
+    Body (partial updates supported):
+      { "minimax_api_key": "...", "zai_api_key": "..." }
+      { "clear_minimax": true }
+      { "clear_zai": true }
+
+    Empty strings are ignored (do not overwrite existing tokens).
+    """
+    payload = body or {}
+    current = session_manager.get_user_provider_keys(user["user_id"])
+    updated = current.copy()
+
+    if payload.get("clear_minimax"):
+        updated.pop("minimax", None)
+    elif "minimax_api_key" in payload:
+        minimax_key = str(payload.get("minimax_api_key") or "").strip()
+        if minimax_key:
+            updated["minimax"] = minimax_key
+
+    if payload.get("clear_zai"):
+        updated.pop("zai", None)
+    elif "zai_api_key" in payload:
+        zai_key = str(payload.get("zai_api_key") or "").strip()
+        if zai_key:
+            updated["zai"] = zai_key
+
+    normalized = session_manager.set_user_provider_keys(
+        user["user_id"],
+        updated,
+    )
+
+    return {
+        "ok": True,
+        "workspace_env_file": session_manager.get_user_workspace_env_file(user["user_id"]),
+        "minimax": {
+            "configured": bool(normalized.get("minimax")),
+            "masked": _mask_secret(normalized.get("minimax", "")),
+            "source": "user" if normalized.get("minimax") else "none",
+        },
+        "zai": {
+            "configured": bool(normalized.get("zai")),
+            "masked": _mask_secret(normalized.get("zai", "")),
+            "source": "user" if normalized.get("zai") else "none",
+        },
+    }
+
+
+@router.post("/providers/test")
+async def test_provider(body: dict | None = None, user: dict = Depends(get_current_user)) -> dict:
+    """Run a tiny completion against MiniMax or ZAI to validate token/config."""
+    payload = body or {}
+    provider = str(payload.get("provider") or "").strip().lower()
+    model_map = {
+        "minimax": "MiniMaxAI/MiniMax-M2.7",
+        "zai": "zai-org/GLM-5.1",
+    }
+    model = model_map.get(provider)
+    if not model:
+        raise HTTPException(status_code=400, detail="provider must be 'minimax' or 'zai'")
+
+    provider_keys = session_manager.get_effective_provider_keys(user["user_id"])
+    llm_params = _resolve_llm_params(model, provider_keys=provider_keys, reasoning_effort="low")
+
+    # Sanitized diagnostics to help users debug endpoint/model issues.
+    resolved_model = llm_params.get("model")
+    resolved_api_base = llm_params.get("api_base")
+
+    try:
+        resp = await acompletion(
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=8,
+            timeout=12,
+            **llm_params,
+        )
+        text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+        return {
+            "ok": True,
+            "provider": provider,
+            "model": model,
+            "resolved_model": resolved_model,
+            "resolved_api_base": resolved_api_base,
+            "preview": text[:80],
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "resolved_model": resolved_model,
+            "resolved_api_base": resolved_api_base,
+            "error": str(e)[:500],
+        }

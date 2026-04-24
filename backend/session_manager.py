@@ -1,7 +1,10 @@
 """Session manager for handling multiple concurrent agent sessions."""
 
 import asyncio
+import base64
+import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -86,6 +89,8 @@ class AgentSession:
     submission_queue: asyncio.Queue
     user_id: str = "dev"  # Owner of this session
     hf_token: str | None = None  # User's HF OAuth token for tool execution
+    provider_keys: dict[str, str] = field(default_factory=dict)  # per-user provider API keys
+    local_mode: bool = False  # True => local filesystem/bash tools (no sandbox)
     task: asyncio.Task | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     is_active: bool = True
@@ -110,13 +115,49 @@ MAX_SESSIONS: int = 200
 MAX_SESSIONS_PER_USER: int = 10
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse boolean env vars like 1/true/yes/on."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class SessionManager:
     """Manages multiple concurrent agent sessions."""
 
     def __init__(self, config_path: str | None = None) -> None:
         self.config = load_config(config_path or DEFAULT_CONFIG_PATH)
+        self.default_local_mode = _env_flag("ML_INTERN_LOCAL_MODE", default=False)
         self.sessions: dict[str, AgentSession] = {}
+
+        # Per-user workspace root for persisted UI settings (.env files).
+        self._workspace_root = Path(
+            os.environ.get(
+                "ML_INTERN_USER_WORKSPACE_ROOT",
+                str(Path.home() / ".ml-intern" / "workspaces"),
+            )
+        )
+
+        # Legacy JSON file from previous implementation (auto-migrated).
+        self._legacy_provider_keys_file = Path(
+            os.environ.get(
+                "ML_INTERN_PROVIDER_KEYS_FILE",
+                str(Path.home() / ".ml-intern" / "provider_keys.json"),
+            )
+        )
+
+        # In-memory cache, hydrated on demand from each user's .env.
+        self.user_provider_keys: dict[str, dict[str, str]] = {}
+        self._migrate_legacy_provider_keys_file()
+
         self._lock = asyncio.Lock()
+
+        if self.default_local_mode:
+            logger.warning(
+                "ML_INTERN_LOCAL_MODE=1 enabled by default: new web sessions get LOCAL "
+                "bash/read/write/edit tools with direct access to the host filesystem."
+            )
 
     def _count_user_sessions(self, user_id: str) -> int:
         """Count active sessions owned by a specific user."""
@@ -126,7 +167,207 @@ class SessionManager:
             if s.user_id == user_id and s.is_active
         )
 
-    async def create_session(self, user_id: str = "dev", hf_token: str | None = None) -> str:
+    @staticmethod
+    def _normalize_provider_keys(keys: dict[str, str] | None) -> dict[str, str]:
+        """Normalize provider key payload to supported keys only."""
+        if not keys:
+            return {}
+        out: dict[str, str] = {}
+        minimax = (keys.get("minimax") or "").strip()
+        zai = (keys.get("zai") or "").strip()
+        if minimax:
+            out["minimax"] = minimax
+        if zai:
+            out["zai"] = zai
+        return out
+
+    @staticmethod
+    def _encode_user_id_for_path(user_id: str) -> str:
+        """Stable, filesystem-safe directory name for a user id."""
+        encoded = base64.urlsafe_b64encode(user_id.encode("utf-8")).decode("ascii")
+        return encoded.rstrip("=") or "dev"
+
+    def _workspace_for_user(self, user_id: str) -> Path:
+        return self._workspace_root / self._encode_user_id_for_path(user_id)
+
+    def _env_file_for_user(self, user_id: str) -> Path:
+        return self._workspace_for_user(user_id) / ".env"
+
+    @staticmethod
+    def _parse_env_value(raw: str) -> str:
+        value = raw.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            quote = value[0]
+            value = value[1:-1]
+            if quote == '"':
+                value = (
+                    value.replace(r"\\", "\\")
+                    .replace(r"\"", '"')
+                    .replace(r"\n", "\n")
+                    .replace(r"\r", "\r")
+                )
+        return value
+
+    @staticmethod
+    def _format_env_value(value: str) -> str:
+        safe_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._:/@")
+        if value and all(c in safe_chars for c in value):
+            return value
+        escaped = value.replace("\\", r"\\").replace('"', r'\"').replace("\n", r"\n").replace("\r", r"\r")
+        return f'"{escaped}"'
+
+    def _read_provider_keys_from_env(self, user_id: str) -> dict[str, str]:
+        """Read provider keys from user's workspace .env (best-effort)."""
+        path = self._env_file_for_user(user_id)
+        if not path.exists():
+            return {}
+
+        out: dict[str, str] = {}
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                if "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = self._parse_env_value(value)
+
+                if key == "MINIMAX_API_KEY" and value:
+                    out["minimax"] = value
+                elif key == "ZAI_API_KEY" and value:
+                    out["zai"] = value
+        except Exception as e:
+            logger.warning("Failed reading provider .env for user %s at %s: %s", user_id, path, e)
+            return {}
+
+        return self._normalize_provider_keys(out)
+
+    def _write_provider_keys_to_env(self, user_id: str, keys: dict[str, str]) -> None:
+        """Persist provider keys to the user's workspace .env."""
+        path = self._env_file_for_user(user_id)
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            lines = [
+                "# Auto-generated by ML Intern settings UI",
+                "# Per-user provider keys",
+            ]
+            if keys.get("minimax"):
+                lines.append(f"MINIMAX_API_KEY={self._format_env_value(keys['minimax'])}")
+            if keys.get("zai"):
+                lines.append(f"ZAI_API_KEY={self._format_env_value(keys['zai'])}")
+
+            content = "\n".join(lines) + "\n"
+
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(content, encoding="utf-8")
+            try:
+                os.chmod(tmp_path, 0o600)
+            except Exception:
+                pass
+
+            tmp_path.replace(path)
+            try:
+                os.chmod(path, 0o600)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("Failed to persist provider keys for user %s to %s: %s", user_id, path, e)
+
+    def _migrate_legacy_provider_keys_file(self) -> None:
+        """Migrate old JSON provider key storage into per-user workspace .env files."""
+        path = self._legacy_provider_keys_file
+        if not path.exists():
+            return
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        if not isinstance(raw, dict):
+            return
+
+        migrated = 0
+        for user_id, keys in raw.items():
+            if not isinstance(user_id, str) or not isinstance(keys, dict):
+                continue
+            normalized = self._normalize_provider_keys(keys)
+            if not normalized:
+                continue
+            env_path = self._env_file_for_user(user_id)
+            if env_path.exists():
+                continue
+            self._write_provider_keys_to_env(user_id, normalized)
+            self.user_provider_keys[user_id] = normalized
+            migrated += 1
+
+        if migrated:
+            logger.info(
+                "Migrated provider keys for %d user(s) from legacy file %s",
+                migrated,
+                path,
+            )
+
+    def get_user_provider_keys(self, user_id: str) -> dict[str, str]:
+        """Get a user's provider keys, loading from user workspace .env if needed."""
+        if user_id not in self.user_provider_keys:
+            self.user_provider_keys[user_id] = self._read_provider_keys_from_env(user_id)
+        return self.user_provider_keys.get(user_id, {}).copy()
+
+    def get_user_workspace_env_file(self, user_id: str) -> str:
+        """Return the .env path used for this user's persisted provider keys."""
+        return str(self._env_file_for_user(user_id))
+
+    def get_effective_provider_keys(self, user_id: str) -> dict[str, str]:
+        """Get provider keys with env fallback.
+
+        Priority:
+          1) user-scoped keys set via /auth/providers/tokens (.env in user workspace)
+          2) process env (MINIMAX_API_KEY / ZAI_API_KEY)
+        """
+        keys = self.get_user_provider_keys(user_id)
+        if not keys.get("minimax"):
+            env_minimax = (os.environ.get("MINIMAX_API_KEY") or "").strip()
+            if env_minimax:
+                keys["minimax"] = env_minimax
+        if not keys.get("zai"):
+            env_zai = (os.environ.get("ZAI_API_KEY") or "").strip()
+            if env_zai:
+                keys["zai"] = env_zai
+        return keys
+
+    def set_user_provider_keys(self, user_id: str, keys: dict[str, str] | None) -> dict[str, str]:
+        """Set provider keys for a user and propagate to active sessions."""
+        normalized = self._normalize_provider_keys(keys)
+
+        # Keep cache in sync
+        self.user_provider_keys[user_id] = normalized
+
+        # Persist to user's workspace .env
+        self._write_provider_keys_to_env(user_id, normalized)
+
+        # Propagate to active sessions for this user
+        for s in self.sessions.values():
+            if s.user_id == user_id:
+                s.provider_keys = normalized.copy()
+                s.session.provider_keys = normalized.copy()
+
+        return normalized.copy()
+
+    async def create_session(
+        self,
+        user_id: str = "dev",
+        hf_token: str | None = None,
+        local_mode: bool | None = None,
+        provider_keys: dict[str, str] | None = None,
+    ) -> str:
         """Create a new agent session and return its ID.
 
         Session() and ToolRouter() constructors contain blocking I/O
@@ -135,6 +376,9 @@ class SessionManager:
 
         Args:
             user_id: The ID of the user who owns this session.
+            local_mode: Override execution mode for this session.
+                True => local host tools (no sandbox_create),
+                False => sandbox tools, None => use server default.
 
         Raises:
             SessionCapacityError: If the server or user has reached the
@@ -158,6 +402,10 @@ class SessionManager:
                         error_type="per_user",
                     )
 
+        session_local_mode = (
+            self.default_local_mode if local_mode is None else bool(local_mode)
+        )
+
         session_id = str(uuid.uuid4())
 
         # Create queues for this session
@@ -169,15 +417,25 @@ class SessionManager:
         # blocks all HTTP/SSE handling.
         import time as _time
 
+        effective_provider_keys = provider_keys or self.user_provider_keys.get(user_id, {}).copy()
+
         def _create_session_sync():
             t0 = _time.monotonic()
-            tool_router = ToolRouter(self.config.mcpServers, hf_token=hf_token)
+            tool_router = ToolRouter(
+                self.config.mcpServers,
+                hf_token=hf_token,
+                local_mode=session_local_mode,
+            )
             # Deep-copy config so each session's model switches independently —
             # tab A picking GLM doesn't flip tab B off Claude.
             session_config = self.config.model_copy(deep=True)
             session = Session(
-                event_queue, config=session_config, tool_router=tool_router,
+                event_queue,
+                config=session_config,
+                tool_router=tool_router,
                 hf_token=hf_token,
+                provider_keys=effective_provider_keys,
+                local_mode=session_local_mode,
             )
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
@@ -193,6 +451,8 @@ class SessionManager:
             submission_queue=submission_queue,
             user_id=user_id,
             hf_token=hf_token,
+            provider_keys=effective_provider_keys,
+            local_mode=session_local_mode,
         )
 
         async with self._lock:
@@ -204,7 +464,8 @@ class SessionManager:
         )
         agent_session.task = task
 
-        logger.info(f"Created session {session_id} for user {user_id}")
+        mode = "local" if session_local_mode else "sandbox"
+        logger.info(f"Created session {session_id} for user {user_id} (mode={mode})")
         return session_id
 
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
@@ -254,6 +515,7 @@ class SessionManager:
                 max_tokens=4000,
                 prompt=_RESTORE_PROMPT,
                 tool_specs=tool_specs,
+                provider_keys=getattr(session, "provider_keys", None),
             )
         except Exception as e:
             logger.error("Summary call failed during seed: %s", e)
@@ -491,6 +753,7 @@ class SessionManager:
             "user_id": agent_session.user_id,
             "pending_approval": pending_approval,
             "model": agent_session.session.config.model_name,
+            "execution_mode": "local" if agent_session.local_mode else "sandbox",
         }
 
     def list_sessions(self, user_id: str | None = None) -> list[dict[str, Any]]:

@@ -20,28 +20,106 @@ from typing import Any, Callable, Union
 
 # ── Config paths Codex uses ────────────────────────────────────────────
 
-def _codex_config_dir() -> Path:
-    """Return Codex config directory (platform-aware)."""
+def _codex_config_candidates() -> list[Path]:
+    """Return candidate Codex config dirs in priority order."""
+    home = Path.home()
+    candidates: list[Path] = []
+
+    # Newer Codex CLI default on Linux/macOS tends to be ~/.codex
+    candidates.append(home / ".codex")
+
     if os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        return base / "codex"
+        base = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        candidates.append(base / "codex")
     elif os.name == "darwin":
-        return Path.home() / "Library" / "Application Support" / "codex"
+        candidates.append(home / "Library" / "Application Support" / "codex")
     else:
-        xdg = os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-        return Path(xdg) / "codex"
+        xdg = os.environ.get("XDG_CONFIG_HOME", home / ".config")
+        candidates.append(Path(xdg) / "codex")
+
+    # Deduplicate while preserving order
+    seen = set()
+    out: list[Path] = []
+    for c in candidates:
+        key = str(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+def _codex_auth_file() -> Path:
+    """Return the best auth.json path (existing one preferred)."""
+    for cfg_dir in _codex_config_candidates():
+        p = cfg_dir / "auth.json"
+        if p.exists():
+            return p
+    # Fallback path for UI display when no auth file exists yet
+    return _codex_config_candidates()[0] / "auth.json"
+
+
+def _read_codex_auth() -> dict[str, Any]:
+    p = _codex_auth_file()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
 
 
 def _codex_auth_token() -> str | None:
     """Return the stored Codex auth token if present."""
-    cfg = _codex_config_dir() / "auth.json"
-    if not cfg.exists():
+    data = _read_codex_auth()
+    if not data:
         return None
+    # Legacy flat keys
+    token = data.get("access_token") or data.get("token")
+    if token:
+        return token
+    # Newer schema
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    return tokens.get("access_token")
+
+
+def codex_auth_token() -> str | None:
+    """Public helper: return current Codex OAuth token if present."""
+    return _codex_auth_token()
+
+
+def _is_codex_logged_in(codex_path: str | None) -> bool:
+    """Check login state via Codex CLI status command."""
+    if not codex_path:
+        return False
     try:
-        data = json.loads(cfg.read_text())
-        return data.get("access_token") or data.get("token")
+        result = subprocess.run(
+            [codex_path, "login", "status"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        return result.returncode == 0 and "logged in" in text.lower()
     except Exception:
-        return None
+        return False
+
+
+def codex_auth_status() -> dict[str, Any]:
+    """Public helper: lightweight Codex auth status for API/UI use."""
+    codex_path = shutil.which("codex")
+    logged_in = _is_codex_logged_in(codex_path)
+    # Fallback to token presence in case status command fails in older/newer CLIs
+    if not logged_in:
+        logged_in = bool(codex_path and _codex_auth_token())
+
+    username = _detect_codex_user(codex_path) if logged_in else None
+    return {
+        "installed": bool(codex_path),
+        "logged_in": logged_in,
+        "username": username,
+        "config_path": str(_codex_auth_file()),
+    }
 
 
 async def codex_login_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
@@ -69,16 +147,14 @@ async def codex_login_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
             False,
         )
 
-    # 2. Check existing auth token
-    if not force:
-        token = _codex_auth_token()
-        if token:
-            username = _detect_codex_user(codex_path)
-            return (
-                f"Codex is already logged in as: {username or 'unknown'}\n"
-                f"Token found at: {_codex_config_dir() / 'auth.json'}",
-                True,
-            )
+    # 2. Check existing auth status
+    if not force and _is_codex_logged_in(codex_path):
+        username = _detect_codex_user(codex_path)
+        return (
+            f"Codex is already logged in as: {username or 'unknown'}\n"
+            f"Auth file: {_codex_auth_file()}",
+            True,
+        )
 
     # 3. Attempt device-code flow in a subprocess. Codex prints a URL + code,
     # then waits for browser completion. We capture the prompt and timeout early.
@@ -113,7 +189,7 @@ async def codex_login_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
 
     try:
         _run_codex_command(
-            ["login", "--device-auth", "--verbose"],
+            ["login", "--device-auth"],
             on_line=_collect,
             timeout=20,
         )
@@ -157,19 +233,27 @@ async def codex_login_handler(arguments: dict[str, Any]) -> tuple[str, bool]:
     )
 
 
-def _detect_codex_user(codex_path: str) -> str | None:
-    """Ask codex for the current username if logged in."""
-    try:
-        result = subprocess.run(
-            [codex_path, "whoami"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip().split("\n")[0]
-    except Exception:
-        pass
+def _detect_codex_user(codex_path: str | None) -> str | None:
+    """Best-effort user identity from auth metadata / CLI."""
+    # Newer auth schema stores account id in tokens.account_id
+    data = _read_codex_auth()
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    account_id = tokens.get("account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        return account_id.strip()
+
+    if codex_path:
+        try:
+            result = subprocess.run(
+                [codex_path, "whoami"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip().split("\n")[0]
+        except Exception:
+            pass
     return None
 
 

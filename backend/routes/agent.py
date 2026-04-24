@@ -46,8 +46,28 @@ AVAILABLE_MODELS = [
     {
         "id": "MiniMaxAI/MiniMax-M2.7",
         "label": "MiniMax M2.7",
-        "provider": "huggingface",
+        "provider": "minimax",
         "recommended": True,
+    },
+    {
+        "id": "openai/gpt-5.3",
+        "label": "GPT-5.3",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.3-codex",
+        "label": "GPT-5.3 Codex",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.4",
+        "label": "GPT-5.4",
+        "provider": "openai",
+    },
+    {
+        "id": "openai/gpt-5.4-codex",
+        "label": "GPT-5.4 Codex",
+        "provider": "openai",
     },
     {
         "id": "moonshotai/Kimi-K2.6",
@@ -57,7 +77,7 @@ AVAILABLE_MODELS = [
     {
         "id": "zai-org/GLM-5.1",
         "label": "GLM 5.1",
-        "provider": "huggingface",
+        "provider": "zai",
     },
 ]
 
@@ -71,6 +91,39 @@ def _check_session_access(session_id: str, user: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="Access denied to this session")
 
 
+def _parse_execution_mode(raw: Any) -> bool | None:
+    """Parse optional execution mode from API payload.
+
+    Returns:
+      True  -> local mode (host bash/read/write/edit)
+      False -> sandbox mode (HF sandbox tools)
+      None  -> unspecified (use server default)
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        mode = raw.strip().lower()
+        if mode == "local":
+            return True
+        if mode in {"sandbox", "hf", "space"}:
+            return False
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid execution_mode. Use 'local' or 'sandbox'.",
+    )
+
+
+def _read_hf_cached_token() -> str | None:
+    """Best-effort fallback to Hugging Face CLI token cache."""
+    try:
+        token_path = os.path.expanduser("~/.cache/huggingface/token")
+        with open(token_path, "r", encoding="utf-8") as f:
+            token = (f.read() or "").strip()
+            return token or None
+    except Exception:
+        return None
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
@@ -82,7 +135,7 @@ async def health_check() -> HealthResponse:
 
 
 @router.get("/health/llm", response_model=LLMHealthResponse)
-async def llm_health_check() -> LLMHealthResponse:
+async def llm_health_check(user: dict = Depends(get_current_user)) -> LLMHealthResponse:
     """Check if the LLM provider is reachable and the API key is valid.
 
     Makes a minimal 1-token completion call.  Catches common errors:
@@ -92,14 +145,40 @@ async def llm_health_check() -> LLMHealthResponse:
     - timeout / network → provider unreachable
     """
     model = session_manager.config.model_name
+    provider_keys = session_manager.get_effective_provider_keys(user["user_id"])
     try:
-        llm_params = _resolve_llm_params(model, reasoning_effort="high")
-        await acompletion(
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=1,
-            timeout=10,
-            **llm_params,
+        llm_params = _resolve_llm_params(
+            model,
+            reasoning_effort="low",
+            provider_keys=provider_keys,
         )
+
+        api_base = str(llm_params.get("api_base") or "")
+        is_codex_backend = "chatgpt.com/backend-api/codex" in api_base
+
+        if is_codex_backend:
+            # Codex backend requires stream=true and has stricter payload rules
+            # than public OpenAI API. Run a tiny streamed probe and stop as soon
+            # as the first chunk arrives.
+            stream = await acompletion(
+                messages=[
+                    {"role": "system", "content": "You are concise."},
+                    {"role": "user", "content": "hi"},
+                ],
+                stream=True,
+                timeout=12,
+                **llm_params,
+            )
+            async for _chunk in stream:
+                break
+        else:
+            await acompletion(
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                timeout=10,
+                **llm_params,
+            )
+
         return LLMHealthResponse(status="ok", model=model)
     except Exception as e:
         err_str = str(e).lower()
@@ -235,10 +314,26 @@ async def create_session(
         hf_token = request.cookies.get("hf_access_token")
     if not hf_token:
         hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        hf_token = _read_hf_cached_token()
+
+    execution_mode = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            execution_mode = _parse_execution_mode(body.get("execution_mode"))
+    except Exception:
+        # Empty body is fine.
+        pass
+
+    provider_keys = session_manager.get_effective_provider_keys(user["user_id"])
 
     try:
         session_id = await session_manager.create_session(
-            user_id=user["user_id"], hf_token=hf_token
+            user_id=user["user_id"],
+            hf_token=hf_token,
+            local_mode=execution_mode,
+            provider_keys=provider_keys,
         )
     except SessionCapacityError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -267,10 +362,18 @@ async def restore_session_summary(
         hf_token = request.cookies.get("hf_access_token")
     if not hf_token:
         hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        hf_token = _read_hf_cached_token()
+
+    execution_mode = _parse_execution_mode(body.get("execution_mode"))
+    provider_keys = session_manager.get_effective_provider_keys(user["user_id"])
 
     try:
         session_id = await session_manager.create_session(
-            user_id=user["user_id"], hf_token=hf_token
+            user_id=user["user_id"],
+            hf_token=hf_token,
+            local_mode=execution_mode,
+            provider_keys=provider_keys,
         )
     except SessionCapacityError as e:
         raise HTTPException(status_code=503, detail=str(e))
