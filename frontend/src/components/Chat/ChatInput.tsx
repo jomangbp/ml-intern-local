@@ -87,6 +87,7 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
+
 export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);

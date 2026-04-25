@@ -41,6 +41,7 @@ eval = [
 # Development and testing dependencies
 dev = [
     "pytest>=9.0.2",
+    "pytest-asyncio>=0.26.0",
 ]
 
 # All dependencies (eval + dev)
@@ -60,3 +61,6 @@ include = ["agent*"]
 
 [tool.uv]
 package = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
