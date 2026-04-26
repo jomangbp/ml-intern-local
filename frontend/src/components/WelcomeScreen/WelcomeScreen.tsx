@@ -8,18 +8,25 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   TextField,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  IconButton,
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import GroupAddIcon from '@mui/icons-material/GroupAdd';
 import LoginIcon from '@mui/icons-material/Login';
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
 import { getPreferredExecutionMode, setPreferredExecutionMode, type ExecutionMode } from '@/utils/executionMode';
 import { isInIframe, triggerLogin } from '@/hooks/useAuth';
 import { useOrgMembership } from '@/hooks/useOrgMembership';
+import TelegramSettingsPanel from '@/components/TelegramSettingsPanel';
 
 const HF_ORANGE = '#FF9D00';
 const ORG_JOIN_URL =
@@ -204,6 +211,7 @@ export default function WelcomeScreen() {
   const [zaiToken, setZaiToken] = useState('');
   const [minimaxConfigured, setMinimaxConfigured] = useState(false);
   const [zaiConfigured, setZaiConfigured] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const inIframe = isInIframe();
   const isAuthenticated = !!user?.authenticated;
@@ -417,11 +425,9 @@ export default function WelcomeScreen() {
   const joinOrgStatus: StepStatus = isOrgMember ? 'completed' : isAuthenticated ? 'active' : 'locked';
   // Do not block session start on org membership.
   const startStatus: StepStatus = isAuthenticated ? 'active' : 'locked';
-
   const canStartNow = isDevUser || isAuthenticated;
-  const floatingStartLabel = isCreating ? 'Starting...' : canStartNow ? 'Start Session' : 'Sign in to Start';
 
-  const handleFloatingStart = useCallback(() => {
+  const handlePrimaryStart = useCallback(() => {
     if (isCreating) return;
     if (canStartNow) {
       void handleStartSession();
@@ -438,24 +444,147 @@ export default function WelcomeScreen() {
         : 'https://smolagents-ml-intern.hf.space'
       : '';
 
+  const onboardingChecklist = (
+    <>
+      {/* ── Checklist ──────────────────────────────────────────── */}
+      <Box
+        sx={{
+          width: '100%',
+          maxWidth: 520,
+          bgcolor: 'var(--surface)',
+          border: '1px solid var(--border)',
+          borderRadius: '12px',
+          overflow: 'hidden',
+          mx: { xs: 0, sm: 2 },
+        }}
+      >
+        {isDevUser ? (
+          /* Dev mode: single step */
+          <ChecklistStep
+            stepNumber={1}
+            title="Start Session"
+            description="Launch an AI agent session for ML engineering."
+            status="active"
+            actionLabel="Start Session"
+            actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
+            onAction={handleStartSession}
+            loading={isCreating}
+            isLast
+          />
+        ) : inIframe ? (
+          /* Iframe: 2 steps */
+          <>
+            <ChecklistStep
+              stepNumber={1}
+              title="Join ML Agent Explorers"
+              description="Get free access to GPUs, inference APIs, and Hub resources."
+              status={isOrgMember ? 'completed' : 'active'}
+              actionLabel="Join Organization"
+              actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
+              onAction={handleJoinOrg}
+            />
+            <ChecklistStep
+              stepNumber={2}
+              title="Open ML Intern"
+              description="Open the agent in a full browser tab to get started."
+              status={'active'}
+              actionLabel="Open ML Intern"
+              actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
+              actionHref={spaceHost}
+              isLast
+            />
+          </>
+        ) : (
+          /* Direct access: 3 steps */
+          <>
+            <ChecklistStep
+              stepNumber={1}
+              title="Sign in with Hugging Face"
+              description="Authenticate to access GPU resources and model APIs."
+              status={signInStatus}
+              actionLabel="Sign in"
+              actionIcon={<LoginIcon sx={{ fontSize: 16 }} />}
+              onAction={() => triggerLogin()}
+            />
+            <ChecklistStep
+              stepNumber={2}
+              title="Join ML Agent Explorers (optional)"
+              description="Optional: get free access to shared GPU resources and Hub perks."
+              status={joinOrgStatus}
+              lockedReason="Sign in first to continue."
+              actionLabel="Join Organization"
+              actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
+              onAction={handleJoinOrg}
+            />
+            <ChecklistStep
+              stepNumber={3}
+              title="Start Session"
+              description="Launch an AI agent session for ML engineering."
+              status={startStatus}
+              lockedReason="Sign in first to continue."
+              actionLabel="Start Session"
+              actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
+              onAction={handleStartSession}
+              loading={isCreating}
+              isLast
+            />
+          </>
+        )}
+      </Box>
+    </>
+  );
+
   return (
     <Box
       sx={{
         width: '100%',
-        minHeight: '100%',
-        height: 'auto',
+        minHeight: '100dvh',
+        height: '100%',
+        maxHeight: '100dvh',
+        boxSizing: 'border-box',
+        position: 'relative',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'flex-start',
         background: 'var(--body-gradient)',
-        py: { xs: 3, md: 4 },
-        pb: { xs: 6, md: 10 },
+        pt: { xs: 3, md: 4 },
+        pb: { xs: 'calc(56px + env(safe-area-inset-bottom))', md: 'calc(72px + env(safe-area-inset-bottom))' },
+        px: { xs: 1.5, sm: 2 },
         overflowY: 'auto',
         overflowX: 'hidden',
+        overscrollBehavior: 'contain',
         WebkitOverflowScrolling: 'touch',
       }}
     >
+      <IconButton
+        onClick={() => setSettingsOpen(true)}
+        size="small"
+        sx={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          color: 'text.secondary',
+          '&:hover': { color: 'primary.main' },
+        }}
+        aria-label="Settings"
+      >
+        <SettingsOutlinedIcon fontSize="small" />
+      </IconButton>
+
+      <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Settings</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="caption" sx={{ color: 'var(--muted-text)' }}>
+            Telegram bot
+          </Typography>
+          <TelegramSettingsPanel />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSettingsOpen(false)} sx={{ textTransform: 'none' }}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Logo */}
       <Box
         component="img"
@@ -544,6 +673,38 @@ export default function WelcomeScreen() {
         Local PC mode runs tools on this machine (no HF sandbox deployment).
       </Typography>
 
+      <Button
+        variant="contained"
+        onClick={handlePrimaryStart}
+        disabled={isCreating}
+        startIcon={isCreating ? <CircularProgress size={16} color="inherit" /> : <RocketLaunchIcon sx={{ fontSize: 16 }} />}
+        sx={{
+          width: '100%',
+          maxWidth: 520,
+          mb: 1.5,
+          py: 1.15,
+          borderRadius: '12px',
+          fontSize: '0.95rem',
+          fontWeight: 800,
+          textTransform: 'none',
+          bgcolor: HF_ORANGE,
+          color: '#000',
+          boxShadow: '0 8px 24px rgba(255,157,0,0.25)',
+          '&:hover': { bgcolor: '#FFB340' },
+        }}
+      >
+        {isCreating ? 'Starting...' : canStartNow ? 'Start Session' : 'Sign in to Start Session'}
+      </Button>
+
+      {onboardingChecklist}
+
+      <Typography
+        variant="caption"
+        sx={{ mt: 2.25, mb: 1, color: 'var(--muted-text)', fontSize: '0.72rem', textAlign: 'center', px: 2 }}
+      >
+        Optional setup below — you can skip it and start a session now.
+      </Typography>
+
       {!inIframe && (
         <Box
           sx={{
@@ -559,11 +720,11 @@ export default function WelcomeScreen() {
             px: 1.5,
             py: 1,
             mb: 1.5,
-            mx: 2,
+            mx: { xs: 0, sm: 2 },
           }}
         >
           <Typography variant="caption" sx={{ color: 'var(--muted-text)', fontSize: '0.75rem' }}>
-            Optional: connect Codex OAuth for GPT-5.3 / GPT-5.4 models.
+            Optional: connect Codex OAuth for GPT-5.3 / GPT-5.4 / GPT-5.5 models.
           </Typography>
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexShrink: 0 }}>
             <Button
@@ -644,7 +805,7 @@ export default function WelcomeScreen() {
             px: 1.5,
             py: 1.2,
             mb: 1.8,
-            mx: 2,
+            mx: { xs: 0, sm: 2 },
           }}
         >
           <Typography variant="caption" sx={{ color: 'var(--muted-text)', fontSize: '0.75rem', display: 'block', mb: 1 }}>
@@ -723,91 +884,7 @@ export default function WelcomeScreen() {
         </Box>
       )}
 
-      {/* ── Checklist ──────────────────────────────────────────── */}
-      <Box
-        sx={{
-          width: '100%',
-          maxWidth: 520,
-          bgcolor: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: '12px',
-          overflow: 'hidden',
-          mx: 2,
-        }}
-      >
-        {isDevUser ? (
-          /* Dev mode: single step */
-          <ChecklistStep
-            stepNumber={1}
-            title="Start Session"
-            description="Launch an AI agent session for ML engineering."
-            status="active"
-            actionLabel="Start Session"
-            actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
-            onAction={handleStartSession}
-            loading={isCreating}
-            isLast
-          />
-        ) : inIframe ? (
-          /* Iframe: 2 steps */
-          <>
-            <ChecklistStep
-              stepNumber={1}
-              title="Join ML Agent Explorers"
-              description="Get free access to GPUs, inference APIs, and Hub resources."
-              status={isOrgMember ? 'completed' : 'active'}
-              actionLabel="Join Organization"
-              actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
-              onAction={handleJoinOrg}
-            />
-            <ChecklistStep
-              stepNumber={2}
-              title="Open ML Intern"
-              description="Open the agent in a full browser tab to get started."
-              status={'active'}
-              actionLabel="Open ML Intern"
-              actionIcon={<OpenInNewIcon sx={{ fontSize: 16 }} />}
-              actionHref={spaceHost}
-              isLast
-            />
-          </>
-        ) : (
-          /* Direct access: 3 steps */
-          <>
-            <ChecklistStep
-              stepNumber={1}
-              title="Sign in with Hugging Face"
-              description="Authenticate to access GPU resources and model APIs."
-              status={signInStatus}
-              actionLabel="Sign in"
-              actionIcon={<LoginIcon sx={{ fontSize: 16 }} />}
-              onAction={() => triggerLogin()}
-            />
-            <ChecklistStep
-              stepNumber={2}
-              title="Join ML Agent Explorers (optional)"
-              description="Optional: get free access to shared GPU resources and Hub perks."
-              status={joinOrgStatus}
-              lockedReason="Sign in first to continue."
-              actionLabel="Join Organization"
-              actionIcon={<GroupAddIcon sx={{ fontSize: 16 }} />}
-              onAction={handleJoinOrg}
-            />
-            <ChecklistStep
-              stepNumber={3}
-              title="Start Session"
-              description="Launch an AI agent session for ML engineering."
-              status={startStatus}
-              lockedReason="Sign in first to continue."
-              actionLabel="Start Session"
-              actionIcon={<RocketLaunchIcon sx={{ fontSize: 16 }} />}
-              onAction={handleStartSession}
-              loading={isCreating}
-              isLast
-            />
-          </>
-        )}
-      </Box>
+
 
       {/* Polling hint when waiting for org join */}
       {isAuthenticated && !isOrgMember && !isDevUser && !inIframe && (
@@ -845,42 +922,6 @@ export default function WelcomeScreen() {
         Conversations are stored locally in your browser.
       </Typography>
 
-      {/* Desktop sticky CTA fallback: always clickable even if scroll/layout breaks */}
-      <Box
-        sx={{
-          position: 'fixed',
-          left: '50%',
-          bottom: 14,
-          transform: 'translateX(-50%)',
-          zIndex: 2000,
-          px: 1,
-          width: { xs: 'calc(100% - 16px)', sm: 'auto' },
-          pointerEvents: 'none',
-        }}
-      >
-        <Button
-          variant="contained"
-          onClick={handleFloatingStart}
-          disabled={isCreating}
-          startIcon={isCreating ? <CircularProgress size={16} color="inherit" /> : <RocketLaunchIcon sx={{ fontSize: 16 }} />}
-          sx={{
-            pointerEvents: 'auto',
-            width: { xs: '100%', sm: 'auto' },
-            minWidth: 220,
-            py: 0.9,
-            px: 2.5,
-            borderRadius: '999px',
-            fontWeight: 700,
-            textTransform: 'none',
-            bgcolor: HF_ORANGE,
-            color: '#000',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
-            '&:hover': { bgcolor: '#FFB340' },
-          }}
-        >
-          {floatingStartLabel}
-        </Button>
-      </Box>
     </Box>
   );
 }

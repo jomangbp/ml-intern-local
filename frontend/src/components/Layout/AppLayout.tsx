@@ -19,6 +19,7 @@ import {
   DialogActions,
   Button,
   TextField,
+  MenuItem,
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
@@ -28,6 +29,7 @@ import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import LoginIcon from '@mui/icons-material/Login';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import ScheduleIcon from '@mui/icons-material/Schedule';
 
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
@@ -36,6 +38,7 @@ import SessionSidebar from '@/components/SessionSidebar/SessionSidebar';
 import SessionChat from '@/components/SessionChat';
 import CodePanel from '@/components/CodePanel/CodePanel';
 import WelcomeScreen from '@/components/WelcomeScreen/WelcomeScreen';
+import SchedulerDialog from '@/components/SchedulerDialog';
 import { apiFetch } from '@/utils/api';
 import { getPreferredExecutionMode, setPreferredExecutionMode, type ExecutionMode } from '@/utils/executionMode';
 
@@ -92,6 +95,7 @@ export default function AppLayout() {
   const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [schedulerOpen, setSchedulerOpen] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [codexConnected, setCodexConnected] = useState(false);
   const [codexMessage, setCodexMessage] = useState('');
@@ -100,6 +104,16 @@ export default function AppLayout() {
   const [workspaceEnvFile, setWorkspaceEnvFile] = useState('');
   const [minimaxToken, setMinimaxToken] = useState('');
   const [zaiToken, setZaiToken] = useState('');
+  const [telegramConfigured, setTelegramConfigured] = useState(false);
+  const [telegramRunning, setTelegramRunning] = useState(false);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramMaskedToken, setTelegramMaskedToken] = useState('');
+  const [telegramToken, setTelegramToken] = useState('');
+  const [telegramAllowedChatIds, setTelegramAllowedChatIds] = useState('');
+  const [telegramExecutionMode, setTelegramExecutionMode] = useState<ExecutionMode>('local');
+  const [telegramTimeoutSeconds, setTelegramTimeoutSeconds] = useState('3600');
+  const [telegramConfigPath, setTelegramConfigPath] = useState('');
+  const [telegramMessage, setTelegramMessage] = useState('');
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [providerTestMessage, setProviderTestMessage] = useState('');
   const codexPopupRef = useRef<Window | null>(null);
@@ -221,9 +235,10 @@ export default function AppLayout() {
 
   const refreshSettings = useCallback(async () => {
     try {
-      const [codexRes, providerRes] = await Promise.all([
+      const [codexRes, providerRes, telegramRes] = await Promise.all([
         apiFetch('/auth/codex/status'),
         apiFetch('/auth/providers/status'),
+        apiFetch('/auth/telegram/status'),
       ]);
 
       if (codexRes.ok) {
@@ -239,6 +254,18 @@ export default function AppLayout() {
         setMinimaxConfigured(!!providerData?.minimax?.configured);
         setZaiConfigured(!!providerData?.zai?.configured);
         setWorkspaceEnvFile(typeof providerData?.workspace_env_file === 'string' ? providerData.workspace_env_file : '');
+      }
+
+      if (telegramRes.ok) {
+        const telegramData = await telegramRes.json();
+        setTelegramConfigured(!!telegramData?.configured);
+        setTelegramRunning(!!telegramData?.running);
+        setTelegramEnabled(!!telegramData?.enabled);
+        setTelegramMaskedToken(typeof telegramData?.masked_token === 'string' ? telegramData.masked_token : '');
+        setTelegramAllowedChatIds(Array.isArray(telegramData?.allowed_chat_ids) ? telegramData.allowed_chat_ids.join(',') : '');
+        setTelegramExecutionMode(telegramData?.execution_mode === 'sandbox' ? 'sandbox' : 'local');
+        setTelegramTimeoutSeconds(String(telegramData?.turn_timeout_seconds || 3600));
+        setTelegramConfigPath(typeof telegramData?.config_path === 'string' ? telegramData.config_path : '');
       }
     } catch {
       // ignore transient settings fetch errors
@@ -334,6 +361,65 @@ export default function AppLayout() {
       setSettingsBusy(false);
     }
   }, [refreshSettings]);
+
+  const handleSaveTelegramConfig = useCallback(async (clearToken = false, forceEnabled?: boolean) => {
+    setSettingsBusy(true);
+    setSettingsError(null);
+    setTelegramMessage('');
+    try {
+      const res = await apiFetch('/auth/telegram/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          token: telegramToken.trim(),
+          clear_token: clearToken,
+          enabled: forceEnabled ?? telegramEnabled,
+          allowed_chat_ids: telegramAllowedChatIds,
+          execution_mode: telegramExecutionMode,
+          turn_timeout_seconds: Number(telegramTimeoutSeconds) || 3600,
+        }),
+      });
+      if (!res.ok) {
+        setSettingsError('Failed to save Telegram bot config.');
+        return;
+      }
+      const data = await res.json();
+      setTelegramToken('');
+      setTelegramConfigured(!!data?.configured);
+      setTelegramRunning(!!data?.running);
+      setTelegramEnabled(!!data?.enabled);
+      setTelegramMaskedToken(typeof data?.masked_token === 'string' ? data.masked_token : '');
+      setTelegramAllowedChatIds(Array.isArray(data?.allowed_chat_ids) ? data.allowed_chat_ids.join(',') : '');
+      setTelegramExecutionMode(data?.execution_mode === 'sandbox' ? 'sandbox' : 'local');
+      setTelegramTimeoutSeconds(String(data?.turn_timeout_seconds || 3600));
+      setTelegramConfigPath(typeof data?.config_path === 'string' ? data.config_path : '');
+      setTelegramMessage(data?.running ? 'Telegram bot is running.' : 'Telegram bot config saved.');
+    } catch {
+      setSettingsError('Failed to save Telegram bot config.');
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [telegramAllowedChatIds, telegramEnabled, telegramExecutionMode, telegramTimeoutSeconds, telegramToken]);
+
+  const handleStopTelegram = useCallback(async () => {
+    setSettingsBusy(true);
+    setSettingsError(null);
+    setTelegramMessage('');
+    try {
+      const res = await apiFetch('/auth/telegram/stop', { method: 'POST' });
+      if (!res.ok) {
+        setSettingsError('Failed to stop Telegram bot.');
+        return;
+      }
+      const data = await res.json();
+      setTelegramRunning(!!data?.running);
+      setTelegramEnabled(!!data?.enabled);
+      setTelegramMessage('Telegram bot stopped.');
+    } catch {
+      setSettingsError('Failed to stop Telegram bot.');
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, []);
 
   const handleTestProvider = useCallback(async (provider: 'minimax' | 'zai') => {
     setSettingsBusy(true);
@@ -623,6 +709,18 @@ export default function AppLayout() {
                 }}
               />
             </Tooltip>
+            <Tooltip title="Configure training scheduler / watchdog">
+              <IconButton
+                onClick={() => setSchedulerOpen(true)}
+                size="small"
+                sx={{
+                  color: activeExecutionMode === 'local' || preferredExecutionMode === 'local' ? '#FF9D00' : 'text.secondary',
+                  '&:hover': { color: '#FF9D00' },
+                }}
+              >
+                <ScheduleIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="Settings">
               <IconButton
                 onClick={openSettings}
@@ -782,6 +880,13 @@ export default function AppLayout() {
         </Drawer>
       )}
 
+      <SchedulerDialog
+        open={schedulerOpen}
+        onClose={() => setSchedulerOpen(false)}
+        activeExecutionMode={activeExecutionMode}
+        activeSessionId={activeSessionId}
+      />
+
       <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Chat Settings</DialogTitle>
         <DialogContent dividers>
@@ -805,7 +910,7 @@ export default function AppLayout() {
           </Box>
 
           <Typography variant="caption" sx={{ color: 'var(--muted-text)' }}>
-            Codex OAuth (for GPT-5.3 / GPT-5.4)
+            Codex OAuth (for GPT-5.3 / GPT-5.4 / GPT-5.5)
           </Typography>
           <Box sx={{ mt: 0.75, mb: 2, display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button
@@ -907,6 +1012,111 @@ export default function AppLayout() {
           {providerTestMessage && (
             <Alert severity="success" sx={{ mt: 2 }}>
               {providerTestMessage}
+            </Alert>
+          )}
+
+          <Typography variant="caption" sx={{ display: 'block', mt: 2.5, color: 'var(--muted-text)' }}>
+            Telegram bot
+          </Typography>
+          <Box sx={{ mt: 0.75, display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Chip
+              size="small"
+              label={telegramRunning ? 'Running' : telegramConfigured ? 'Configured' : 'Not configured'}
+              sx={{
+                fontWeight: 600,
+                color: telegramRunning ? '#000' : 'var(--muted-text)',
+                bgcolor: telegramRunning ? 'var(--accent-green)' : 'rgba(255,255,255,0.06)',
+                border: '1px solid var(--border)',
+              }}
+            />
+            {telegramMaskedToken && (
+              <Typography variant="caption" sx={{ color: 'var(--muted-text)', fontFamily: 'monospace' }}>
+                {telegramMaskedToken}
+              </Typography>
+            )}
+          </Box>
+          {!!telegramConfigPath && (
+            <Typography variant="caption" sx={{ display: 'block', mt: 0.5, color: 'var(--muted-text)', fontFamily: 'monospace' }} title={telegramConfigPath}>
+              Config: {telegramConfigPath}
+            </Typography>
+          )}
+          <Box sx={{ mt: 0.75, display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1 }}>
+            <TextField
+              size="small"
+              type="password"
+              placeholder={telegramConfigured ? 'Telegram bot token configured' : 'Telegram bot token'}
+              value={telegramToken}
+              onChange={(e) => setTelegramToken(e.target.value)}
+            />
+            <TextField
+              size="small"
+              placeholder="Allowed chat IDs, comma-separated (optional)"
+              value={telegramAllowedChatIds}
+              onChange={(e) => setTelegramAllowedChatIds(e.target.value)}
+            />
+            <TextField
+              select
+              size="small"
+              label="Execution mode"
+              value={telegramExecutionMode}
+              onChange={(e) => setTelegramExecutionMode(e.target.value === 'sandbox' ? 'sandbox' : 'local')}
+            >
+              <MenuItem value="local">Local</MenuItem>
+              <MenuItem value="sandbox">Sandbox</MenuItem>
+            </TextField>
+            <TextField
+              size="small"
+              label="Turn timeout seconds"
+              type="number"
+              value={telegramTimeoutSeconds}
+              onChange={(e) => setTelegramTimeoutSeconds(e.target.value)}
+              inputProps={{ min: 30, step: 30 }}
+            />
+          </Box>
+          <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={() => handleSaveTelegramConfig(false, true)}
+              disabled={settingsBusy || (!telegramToken.trim() && !telegramConfigured)}
+              sx={{ textTransform: 'none', bgcolor: '#FF9D00', color: '#000' }}
+            >
+              Save & start bot
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => handleSaveTelegramConfig(false, false)}
+              disabled={settingsBusy}
+              sx={{ textTransform: 'none' }}
+            >
+              Save disabled
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={handleStopTelegram}
+              disabled={settingsBusy || !telegramRunning}
+              sx={{ textTransform: 'none' }}
+            >
+              Stop bot
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => handleSaveTelegramConfig(true, false)}
+              disabled={settingsBusy || !telegramConfigured}
+              sx={{ textTransform: 'none' }}
+            >
+              Clear token
+            </Button>
+          </Box>
+          <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--muted-text)', fontFamily: 'monospace' }}>
+            Commands: /start, /help, /commands, /new, /status, /sessions, /crons, /cancelcron &lt;id&gt;, /interrupt, /cron [minutes] &lt;prompt&gt;
+          </Typography>
+          {telegramMessage && (
+            <Alert severity="success" sx={{ mt: 2 }}>
+              {telegramMessage}
             </Alert>
           )}
 

@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from dependencies import get_current_user
@@ -31,55 +32,13 @@ from models import (
 from session_manager import MAX_SESSIONS, SessionCapacityError, session_manager
 
 from agent.core.llm_params import _resolve_llm_params
+from prompt_cron import prompt_cron_manager
+from model_catalog import AVAILABLE_MODELS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["agent"])
 
-AVAILABLE_MODELS = [
-    {
-        "id": "anthropic/claude-opus-4-6",
-        "label": "Claude Opus 4.6",
-        "provider": "anthropic",
-        "recommended": True,
-    },
-    {
-        "id": "MiniMaxAI/MiniMax-M2.7",
-        "label": "MiniMax M2.7",
-        "provider": "minimax",
-        "recommended": True,
-    },
-    {
-        "id": "openai/gpt-5.3",
-        "label": "GPT-5.3",
-        "provider": "openai",
-    },
-    {
-        "id": "openai/gpt-5.3-codex",
-        "label": "GPT-5.3 Codex",
-        "provider": "openai",
-    },
-    {
-        "id": "openai/gpt-5.4",
-        "label": "GPT-5.4",
-        "provider": "openai",
-    },
-    {
-        "id": "openai/gpt-5.4-codex",
-        "label": "GPT-5.4 Codex",
-        "provider": "openai",
-    },
-    {
-        "id": "moonshotai/Kimi-K2.6",
-        "label": "Kimi K2.6",
-        "provider": "huggingface",
-    },
-    {
-        "id": "zai-org/GLM-5.1",
-        "label": "GLM 5.1",
-        "provider": "zai",
-    },
-]
 
 
 def _check_session_access(session_id: str, user: dict[str, Any]) -> None:
@@ -437,6 +396,155 @@ async def list_sessions(user: dict = Depends(get_current_user)) -> list[SessionI
     return [SessionInfo(**s) for s in sessions]
 
 
+def _load_scheduler_statuses() -> list[dict[str, Any]]:
+    """Load local shell/watchdog scheduler task statuses for the UI."""
+    from agent.tools.local_scheduler_tool import STATE_DIR, _pid_is_alive
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    statuses: list[dict[str, Any]] = []
+    for path in sorted(STATE_DIR.glob("*.status.json"), reverse=True):
+        try:
+            status = json.loads(path.read_text(encoding="utf-8"))
+            status.setdefault("config", {})["kind"] = status.get("config", {}).get("kind") or "local_watchdog"
+            runner_pid = status.get("runner_pid")
+            if runner_pid:
+                status["runner_alive"] = _pid_is_alive(int(runner_pid))
+            statuses.append(status)
+        except Exception as e:
+            logger.warning("Failed to read scheduler status %s: %s", path, e)
+    return statuses
+
+
+async def _all_scheduler_statuses(user_id: str | None = None) -> list[dict[str, Any]]:
+    statuses = _load_scheduler_statuses()
+    statuses.extend(await prompt_cron_manager.list(user_id=user_id))
+    return sorted(statuses, key=lambda s: s.get("created_at", ""), reverse=True)
+
+
+_CRON_COMMAND_RE = re.compile(r"^/cron\s+(\d+(?:\.\d+)?)\s+([\s\S]+?)\s*$", re.IGNORECASE)
+
+
+def _parse_cron_command(text: str) -> tuple[float, str] | None:
+    match = _CRON_COMMAND_RE.match(text.strip())
+    if not match:
+        return None
+    return float(match.group(1)), match.group(2).strip()
+
+
+async def _create_prompt_cron_from_payload(payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id:
+        _check_session_access(session_id, user)
+    interval_minutes = float(payload.get("interval_minutes") or 0)
+    prompt = str(payload.get("prompt") or "").strip()
+    return await prompt_cron_manager.create(
+        session_id=session_id,
+        user_id=user["user_id"],
+        interval_minutes=interval_minutes,
+        prompt=prompt,
+        submit_prompt=session_manager.submit_user_input,
+        task_name=payload.get("task_name") or None,
+        repeat=bool(payload.get("repeat", True)),
+        max_runs=int(payload.get("max_runs") or 0),
+        run_immediately=bool(payload.get("run_immediately", False)),
+    )
+
+
+@router.get("/scheduler/tasks")
+async def list_scheduler_tasks(user: dict = Depends(get_current_user)) -> dict:
+    """List local scheduler/watchdog and prompt cron tasks."""
+    return {"tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
+
+
+@router.get("/scheduler/tasks/{task_id}")
+async def get_scheduler_task(
+    task_id: str, user: dict = Depends(get_current_user)
+) -> dict:
+    """Get one local scheduler/watchdog or prompt cron task."""
+    prompt_task = await prompt_cron_manager.get(task_id)
+    if prompt_task:
+        return {"task": prompt_task}
+    for status in _load_scheduler_statuses():
+        if status.get("task_id") == task_id:
+            return {"task": status}
+    raise HTTPException(status_code=404, detail="Scheduler task not found")
+
+
+@router.post("/scheduler/tasks")
+async def create_scheduler_task(
+    body: dict, user: dict = Depends(get_current_user)
+) -> dict:
+    """Create a local scheduler/watchdog or prompt cron task from the UI."""
+    from agent.tools.local_scheduler_tool import _local_scheduler_handler
+
+    payload = dict(body or {})
+    if str(payload.get("prompt") or "").strip():
+        try:
+            status = await _create_prompt_cron_from_payload(payload, user)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        task_id = status["task_id"]
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "output": f"Scheduled prompt cron {task_id}.",
+            "tasks": await _all_scheduler_statuses(user_id=user["user_id"]),
+        }
+
+    payload["action"] = "create"
+    output, ok = await _local_scheduler_handler(payload)
+    if not ok:
+        raise HTTPException(status_code=400, detail=output)
+    match = re.search(r"^task_id:\s*(\S+)", output, re.MULTILINE)
+    task_id = match.group(1) if match else None
+    return {"ok": ok, "task_id": task_id, "output": output, "tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
+
+
+@router.post("/scheduler/run-once")
+async def run_scheduler_once(
+    body: dict, user: dict = Depends(get_current_user)
+) -> dict:
+    """Run a scheduler/watchdog check immediately without saving a task."""
+    from agent.tools.local_scheduler_tool import _local_scheduler_handler
+
+    payload = dict(body or {})
+    if str(payload.get("prompt") or "").strip():
+        session_id = str(payload.get("session_id") or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required to run a prompt now")
+        _check_session_access(session_id, user)
+        ok = await session_manager.submit_user_input(session_id, str(payload["prompt"]).strip())
+        if not ok:
+            raise HTTPException(status_code=404, detail="Session not found or inactive")
+        return {"ok": True, "output": "Prompt submitted to agent session."}
+
+    payload["action"] = "run_once"
+    output, ok = await _local_scheduler_handler(payload)
+    if not ok:
+        raise HTTPException(status_code=400, detail=output)
+    return {"ok": ok, "output": output}
+
+
+@router.post("/scheduler/tasks/{task_id}/cancel")
+async def cancel_scheduler_task(
+    task_id: str, user: dict = Depends(get_current_user)
+) -> dict:
+    """Cancel a local scheduler/watchdog or prompt cron task."""
+    from agent.tools.local_scheduler_tool import _local_scheduler_handler
+
+    prompt_task = await prompt_cron_manager.get(task_id)
+    if prompt_task:
+        ok = await prompt_cron_manager.cancel(task_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"No such prompt cron task: {task_id}")
+        return {"ok": True, "output": f"Cancelled prompt cron {task_id}.", "tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
+
+    output, ok = await _local_scheduler_handler({"action": "cancel", "task_id": task_id})
+    if not ok:
+        raise HTTPException(status_code=400, detail=output)
+    return {"ok": ok, "output": output, "tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
+
+
 @router.delete("/session/{session_id}")
 async def delete_session(
     session_id: str, user: dict = Depends(get_current_user)
@@ -497,6 +605,29 @@ async def chat_sse(
 
     # Parse body
     body = await request.json()
+    text = body.get("text")
+    approvals = body.get("approvals")
+
+    if isinstance(text, str):
+        cron = _parse_cron_command(text)
+        if cron:
+            interval_minutes, prompt = cron
+            status = await prompt_cron_manager.create(
+                session_id=session_id,
+                user_id=user["user_id"],
+                interval_minutes=interval_minutes,
+                prompt=prompt,
+                submit_prompt=session_manager.submit_user_input,
+                task_name=f"/cron {interval_minutes:g} min",
+                repeat=True,
+                max_runs=0,
+            )
+            msg = (
+                f"Scheduled cron task `{status['task_id']}` every {interval_minutes:g} minute(s).\n\n"
+                f"Prompt:\n{prompt}\n\n"
+                "Open the clock icon in the top bar to view or cancel it."
+            )
+            return _immediate_sse_response(msg)
 
     # Subscribe BEFORE submitting so we never miss events — even if the
     # agent loop processes the submission before this coroutine continues.
@@ -504,8 +635,6 @@ async def chat_sse(
     sub_id, event_queue = broadcaster.subscribe()
 
     # Submit the operation
-    text = body.get("text")
-    approvals = body.get("approvals")
 
     try:
         if approvals:
@@ -542,6 +671,29 @@ async def chat_sse(
 # ---------------------------------------------------------------------------
 _TERMINAL_EVENTS = {"turn_complete", "approval_required", "error", "interrupted", "shutdown"}
 _SSE_KEEPALIVE_SECONDS = 15
+
+
+def _immediate_sse_response(message: str) -> StreamingResponse:
+    """Return a short SSE response without submitting to the agent loop."""
+
+    async def event_generator():
+        events = [
+            {"event_type": "processing", "data": {}},
+            {"event_type": "assistant_message", "data": {"content": message}},
+            {"event_type": "turn_complete", "data": {}},
+        ]
+        for event in events:
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _sse_response(broadcaster, event_queue, sub_id) -> StreamingResponse:

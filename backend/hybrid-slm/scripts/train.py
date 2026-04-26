@@ -23,11 +23,13 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset
 from torch.optim import AdamW
 from torch.amp import autocast, GradScaler
 
 import numpy as np
+
+import trackio
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -139,6 +141,88 @@ class TokenizedDataset(Dataset):
         }
 
 
+class StreamingTokenDataset(IterableDataset):
+    """Streaming dataset that reads sequentially from a memory-mapped token file
+    with buffered shuffling for good randomization without random disk seeks.
+
+    Strategy:
+    1. Read tokens sequentially in large chunks (~64K samples at a time)
+    2. Slice into training windows within the chunk (all in RAM)
+    3. Shuffle the windows within each chunk for randomization
+    4. Yield shuffled samples
+
+    This keeps disk reads sequential (16x faster than random access)
+    while still providing good randomization within each chunk.
+    With 64K samples per chunk, adjacent batches see diverse data.
+    """
+
+    def __init__(
+        self,
+        data_path: str,
+        max_length: int = 1024,
+        stride: int = 256,
+        chunk_samples: int = 64_000,  # ~64K samples per sequential read
+        seed: int = 42,
+    ):
+        self.data_path = data_path
+        self.max_length = max_length
+        self.stride = stride
+        self.chunk_samples = chunk_samples
+        self.seed = seed
+
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(
+                f"Tokenized data not found at {data_path}. "
+                "Run download_and_tokenize.py first."
+            )
+
+        ids_tmp = np.memmap(data_path, dtype=np.uint32, mode="r")
+        self.num_tokens = len(ids_tmp)
+        self.num_samples = max(0, (self.num_tokens - (max_length + 1)) // stride)
+        del ids_tmp
+
+    def __len__(self):
+        return self.num_samples
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed)
+        ids = np.memmap(self.data_path, dtype=np.uint32, mode="r")
+
+        num_samples = self.num_samples
+        chunk_size = self.chunk_samples
+
+        # Process the file SEQUENTIALLY — no chunk shuffle
+        # This gives maximum disk read throughput (no random seeks)
+        # TinyStories is only ~2 of 32 chunks, so after ~2K steps it's all FineWeb-Edu
+        for chunk_start in range(0, num_samples, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, num_samples)
+
+            # Read one big contiguous block of tokens into RAM
+            token_start = chunk_start * self.stride
+            token_end = (chunk_end - 1) * self.stride + self.max_length + 1
+            big_chunk = ids[token_start:token_end].astype(np.int64)
+
+            # Slice into training windows (all in RAM, very fast)
+            samples = []
+            for i in range(chunk_start, chunk_end):
+                local_start = (i - chunk_start) * self.stride
+                local_end = local_start + self.max_length + 1
+                window = big_chunk[local_start:local_end]
+
+                samples.append({
+                    "input_ids": torch.from_numpy(window[:-1].copy()),
+                    "labels": torch.from_numpy(window[1:].copy()),
+                })
+
+            # Shuffle within chunk for randomization
+            rng.shuffle(samples)
+
+            for item in samples:
+                yield item
+
+            del big_chunk, samples
+
+
 class TextDataset(Dataset):
     """
     On-the-fly tokenization dataset
@@ -180,18 +264,18 @@ def create_dataloaders(
     max_length: int = 1024
 ) -> tuple[DataLoader, DataLoader]:
     """Create training and validation dataloaders - optimized for memory"""
-    
-    # Training dataloader with memory efficiency
-    train_dataset = TokenizedDataset(
+
+    # Training: streaming dataset for stable throughput
+    train_dataset = StreamingTokenDataset(
         data_path=config.train_data_path,
-        max_length=max_length
+        max_length=max_length,
+        chunk_samples=32_000,  # TinyStories is 97MB, smaller chunks fine
     )
-    
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config.per_device_train_batch_size,  # 1 for 6GB
-        shuffle=True,
-        num_workers=0,  # Disable workers to save memory
+        batch_size=config.per_device_train_batch_size,
+        num_workers=0,
         pin_memory=True,
         drop_last=True,
         collate_fn=lambda x: {
@@ -199,13 +283,13 @@ def create_dataloaders(
             'labels': torch.stack([item['labels'] for item in x])
         }
     )
-    
-    # Validation dataloader
+
+    # Validation: keep the simple dataset (small file, no shuffle needed)
     val_dataset = TokenizedDataset(
         data_path=config.val_data_path,
         max_length=max_length
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.per_device_train_batch_size,
@@ -217,7 +301,7 @@ def create_dataloaders(
             'labels': torch.stack([item['labels'] for item in x])
         }
     )
-    
+
     return train_loader, val_loader
 
 
@@ -452,7 +536,8 @@ def main():
     print(f"  Sequence length: {train_config.max_seq_length}")
     print(f"  Batch size: {train_config.per_device_train_batch_size}")
     print(f"  Gradient accumulation: {train_config.gradient_accumulation_steps}")
-    print(f"  Effective batch: {train_config.per_device_train_batch_size * train_config.gradient_accumulation_steps * train_config.max_seq_length}")
+    print(f"  Effective batch: {train_config.per_device_train_batch_size * train_config.gradient_accumulation_steps} samples, "
+          f"{train_config.per_device_train_batch_size * train_config.gradient_accumulation_steps * train_config.max_seq_length} tokens/step")
 
     # Model
     print("\nInitializing model...")
@@ -473,26 +558,52 @@ def main():
         eps=1e-8
     )
 
-    # Scheduler
-    scheduler = CosineAnnealingWarmup(
-        optimizer,
-        warmup_steps=train_config.warmup_steps,
-        max_steps=train_config.max_steps,
-        min_lr=train_config.min_learning_rate
-    )
-
-    # Gradient scaler for mixed precision
-    scaler = GradScaler('cuda')
-
     # Training state
     state = TrainingState()
 
     # Load checkpoint if resuming
     if train_config.resume_from_checkpoint:
-        state = load_checkpoint(model, optimizer, scheduler, train_config)
+        state = load_checkpoint(model, optimizer, None, train_config)
+
+    # Scheduler - initialized AFTER loading checkpoint so last_step reflects resumed step
+    scheduler = CosineAnnealingWarmup(
+        optimizer,
+        warmup_steps=train_config.warmup_steps,
+        max_steps=train_config.max_steps,
+        min_lr=train_config.min_learning_rate,
+        last_step=state.step  # Resume from current step
+    )
+
+    # Gradient scaler for mixed precision
+    scaler = GradScaler('cuda')
 
     # Output directory
     os.makedirs(train_config.output_dir, exist_ok=True)
+
+    # ── Trackio experiment tracking ──────────────────────────────────
+    run_name = "v1-hybrid-slm-baseline"
+    trackio.init(
+        project="hybrid-slm",
+        name=run_name,
+        config={
+            "learning_rate": train_config.learning_rate,
+            "min_learning_rate": train_config.min_learning_rate,
+            "warmup_steps": train_config.warmup_steps,
+            "max_steps": train_config.max_steps,
+            "batch_size": train_config.per_device_train_batch_size,
+            "grad_accum": train_config.gradient_accumulation_steps,
+            "seq_length": train_config.max_seq_length,
+            "weight_decay": train_config.weight_decay,
+            "gradient_clipping": train_config.gradient_clipping,
+            "hidden_size": model_config.hidden_size,
+            "num_layers": model_config.num_hidden_layers,
+            "num_heads": model_config.num_attention_heads,
+            "vocab_size": model_config.vocab_size,
+            "model_params": sum(p.numel() for p in model.parameters()),
+            "dataset": "TinyStories (25M tokens)",
+            "resume_from_step": state.step,
+        },
+    )
 
     # Logging
     print(f"\nTraining config:")
@@ -542,34 +653,37 @@ def main():
 
     # Keep a running iterator for the training set
     train_iter = iter(train_loader)
+    accum_steps = train_config.gradient_accumulation_steps
 
     for step in range(state.step, train_config.max_steps):
-        # Fetch next batch (re-iterate when exhausted)
-        try:
-            batch = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            batch = next(train_iter)
-            state.epoch += 1
-
-        # ── Single training step ────────────────────────────────────
+        # ── Training step with gradient accumulation ──────────────
         model.train()
-        input_ids = batch['input_ids'].cuda(non_blocking=True)
-        labels = batch['labels'].cuda(non_blocking=True)
-
         optimizer.zero_grad(set_to_none=True)
+        step_loss = 0.0
+        step_tokens = 0
 
-        # Forward + backward
-        with autocast('cuda', dtype=torch.bfloat16, enabled=train_config.bf16):
-            outputs = model(
-                input_ids=input_ids,
-                labels=labels
-            )
-            loss = outputs['loss']
+        for micro_step in range(accum_steps):
+            # Fetch next batch (re-iterate when exhausted)
+            try:
+                batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                batch = next(train_iter)
+                state.epoch += 1
 
-        scaler.scale(loss).backward()
-        total_loss = loss.item()
-        del outputs, loss
+            input_ids = batch['input_ids'].cuda(non_blocking=True)
+            labels = batch['labels'].cuda(non_blocking=True)
+
+            # Forward + backward
+            with autocast('cuda', dtype=torch.bfloat16, enabled=train_config.bf16):
+                outputs = model(input_ids=input_ids, labels=labels)
+                loss = outputs['loss'] / accum_steps  # Scale loss for accumulation
+
+            scaler.scale(loss).backward()
+            step_loss += loss.item() * accum_steps  # Unscale for logging
+            step_tokens += input_ids.numel()
+
+            del outputs, loss, input_ids, labels
 
         # Gradient clipping
         if train_config.gradient_clipping > 0:
@@ -582,10 +696,8 @@ def main():
         scheduler.step()
 
         state.step = step + 1
-        state.total_loss += total_loss
-        state.num_tokens += input_ids.numel()
-
-        del input_ids, labels
+        state.total_loss += step_loss
+        state.num_tokens += step_tokens
 
         # Periodic cache clearing for 6GB VRAM
         if step % train_config.empty_cache_steps == 0:
@@ -595,16 +707,27 @@ def main():
         # ── Logging ─────────────────────────────────────────────────
         if state.step % train_config.logging_steps == 0:
             elapsed = time.time() - start_time
-            avg_loss = total_loss  # loss of this step
+            avg_loss = step_loss / accum_steps  # Average loss across micro-batches
             lr = optimizer.param_groups[0]['lr']
             tokens_per_sec = state.num_tokens / elapsed if elapsed > 0 else 0
+            mem_gb = torch.cuda.memory_allocated() / 1024**3
 
             log_line = (f"step={state.step:,} | loss={avg_loss:.4f} | "
                         f"lr={lr:.2e} | tokens/s={tokens_per_sec:,.0f} | "
-                        f"epoch={state.epoch} | mem={torch.cuda.memory_allocated() / 1024**3:.2f}GB")
+                        f"epoch={state.epoch} | mem={mem_gb:.2f}GB")
             print(log_line)
             log_file.write(log_line + "\n")
             log_file.flush()
+
+            # Trackio logging
+            trackio.log({
+                "train/loss": avg_loss,
+                "train/learning_rate": lr,
+                "train/tokens_per_sec": tokens_per_sec,
+                "train/tokens_seen": state.num_tokens,
+                "train/gpu_memory_gb": mem_gb,
+                "train/epoch": state.epoch,
+            })
 
         # ── Evaluation ──────────────────────────────────────────────
         if state.step % train_config.eval_steps == 0:
@@ -616,6 +739,13 @@ def main():
             print(eval_line)
             log_file.write(eval_line + "\n")
             log_file.flush()
+
+            # Trackio eval logging
+            trackio.log({
+                "val/loss": val_loss,
+                "val/perplexity": val_ppl,
+                "val/best_loss": state.best_loss,
+            })
 
             # Save best model
             if val_loss < state.best_loss:
@@ -667,6 +797,8 @@ def main():
 
     log_file.close()
     print(f"\nTraining log saved to {train_config.output_dir}/training_log.txt")
+
+    trackio.finish()
 
     return model, optimizer, scheduler, state
 

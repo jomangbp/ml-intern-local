@@ -18,6 +18,7 @@ from litellm import acompletion
 from agent.core.llm_params import _resolve_llm_params
 from agent.tools.codex_tool import codex_auth_status, codex_login_handler
 from session_manager import session_manager
+from telegram_bot import telegram_bot_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -296,6 +297,28 @@ async def set_provider_tokens(body: dict | None = None, user: dict = Depends(get
             "source": "user" if normalized.get("zai") else "none",
         },
     }
+
+
+@router.get("/telegram/status")
+async def telegram_status(user: dict = Depends(get_current_user)) -> dict:
+    """Return Telegram bot configuration/runtime status."""
+    return telegram_bot_service.status()
+
+
+@router.post("/telegram/config")
+async def telegram_config(body: dict | None = None, user: dict = Depends(get_current_user)) -> dict:
+    """Configure the optional Telegram bot and start/stop it if needed."""
+    try:
+        return await telegram_bot_service.configure(body or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/telegram/stop")
+async def telegram_stop(user: dict = Depends(get_current_user)) -> dict:
+    """Stop Telegram bot polling without deleting saved config."""
+    await telegram_bot_service.stop()
+    return telegram_bot_service.status()
 
 
 @router.post("/providers/test")

@@ -92,9 +92,9 @@ _PROVIDER_KEY_ENV: dict[str, str] = {
 
 def _get_provider_key(provider_key: str) -> str:
     env_name = _PROVIDER_KEY_ENV.get(provider_key)
-    if not env_name:
-        return ""
-    return os.environ.get(env_name, "")
+    if env_name:
+        return os.environ.get(env_name, "")
+    return ""
 
 
 def _read_hf_cached_token() -> str:
@@ -131,6 +131,8 @@ def _map_openai_model_to_codex_backend(model_id: str) -> str:
         return "gpt-5.3-codex"
     if model == "gpt-5.4-codex":
         return "gpt-5.4"
+    if model == "gpt-5.5-codex":
+        return "gpt-5.5"
     return model_id
 
 

@@ -100,10 +100,14 @@ class FullAttention(nn.Module):
         k = self.k_proj(hidden_states).view(B, L, self.num_kv_heads, self.head_dim)
         v = self.v_proj(hidden_states).view(B, L, self.num_kv_heads, self.head_dim)
         
-        # RoPE disabled for now (simplification needed for GQA)
-        # if self.rotary_emb is not None:
-        #     q = self.rotary_emb.apply_rotary(q, cos, sin)
-            # K doesn't get RoPE in this simplified implementation
+        # Apply RoPE to Q and K
+        if self.rotary_emb is not None:
+            # Transpose for rotary: [B, L, H, D] -> [B, H, L, D]
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            q, k = self.rotary_emb(q, k, position_ids=position_ids)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
         
         # Handle KV cache
         if past_key_value is not None:

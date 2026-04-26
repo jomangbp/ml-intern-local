@@ -81,3 +81,8 @@ training.log
 # Frontend build cache
 frontend/tsconfig.tsbuildinfo
 static/assets/index-*.js
+.env
+session_logs/
+backend/session_logs/
+*.log
+static/

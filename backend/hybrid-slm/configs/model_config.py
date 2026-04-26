@@ -134,43 +134,43 @@ class HybridSLMConfig:
 @dataclass  
 class TrainingConfig:
     """Training configuration - optimized for 6GB VRAM"""
-    # Data - FIXED PATHS to match tokenization script output
+    # Data - TinyStories only for comparison experiments
     train_data_path: str = "data/train_tokens.bin"
     val_data_path: str = "data/val_tokens.bin"
     vocab_file: str = "data/tokenizer_meta.json"
     
-    # Optimization - 6GB optimized
-    learning_rate: float = 3e-4
-    min_learning_rate: float = 3e-5
-    warmup_steps: int = 500
+    # Optimization - improved recipe based on GatedDeltaNet paper
+    learning_rate: float = 4e-4  # Increased from 3e-4 (GatedDeltaNet uses 4e-4)
+    min_learning_rate: float = 4e-5  # 10% of peak
+    warmup_steps: int = 2000  # 2% of total steps (GatedDeltaNet: 1%)
     max_steps: int = 100000
-    save_steps: int = 1000  # Save more frequently
-    eval_steps: int = 500
+    save_steps: int = 5000  # Save every 5K steps for comparison
+    eval_steps: int = 1000
     logging_steps: int = 10
     
-    # Batch - aggressive memory saving for 6GB
-    per_device_train_batch_size: int = 1  # Reduced from 4 - single sample
-    gradient_accumulation_steps: int = 128  # Increased to maintain effective batch
-    max_seq_length: int = 1024  # Reduced from 2048
+    # Batch - scaled up to use more VRAM
+    per_device_train_batch_size: int = 3
+    gradient_accumulation_steps: int = 2  # Effective bs=6, 6144 tokens/step
+    max_seq_length: int = 1024
     
     # Model
-    output_dir: str = "outputs/hybrid-slm-6gb"
+    output_dir: str = "outputs/v1-hybrid-slm-baseline"
     resume_from_checkpoint: Optional[str] = None
     
     # Mixed precision
     bf16: bool = True
     fp16: bool = False
     
-    # Efficiency - maximum memory saving
+    # Efficiency
     gradient_checkpointing: bool = True
     gradient_clipping: float = 1.0
     weight_decay: float = 0.1
     use_flash_attention: bool = True
-    empty_cache_steps: int = 100  # Clear cache periodically
+    empty_cache_steps: int = 100
     
     # Monitoring
     wandb_project: str = "hybrid-slm"
-    wandb_run_name: str = "hybrid-slm-6gb"
+    wandb_run_name: str = "hybrid-slm-v3"
 
 
 def print_model_info(config: HybridSLMConfig):

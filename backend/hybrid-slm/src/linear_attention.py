@@ -69,11 +69,9 @@ class GatedDeltaNetAttention(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize weights"""
-        nn.init.xavier_uniform_(self.q_proj.weight)
-        nn.init.xavier_uniform_(self.k_proj.weight)
-        nn.init.xavier_uniform_(self.v_proj.weight)
-        nn.init.xavier_uniform_(self.o_proj.weight)
+        """Initialize weights with LeCun init (consistent across all layers)"""
+        for module in [self.q_proj, self.k_proj, self.v_proj, self.o_proj]:
+            nn.init.normal_(module.weight, std=0.02)
         
         nn.init.zeros_(self.alpha_gate.weight)
         nn.init.zeros_(self.beta_gate.weight)
@@ -196,10 +194,23 @@ class ChunkwiseDeltaAttention(nn.Module):
         self.alpha_gate = nn.Linear(hidden_size, num_heads)
         self.beta_gate = nn.Linear(hidden_size, num_heads)
         
+        # Output gate (critical per GatedDeltaNet ablation: -1.77 PPL)
+        self.output_gate = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
+        
         # Output
         self.o_proj = nn.Linear(num_heads * head_dim, hidden_size)
         
         self.dropout = nn.Dropout(dropout)
+        
+        # Consistent init
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Consistent weight initialization"""
+        for module in [self.q_proj, self.k_proj, self.v_proj, self.o_proj, self.output_gate]:
+            nn.init.normal_(module.weight, std=0.02)
+        nn.init.zeros_(self.alpha_gate.weight)
+        nn.init.zeros_(self.beta_gate.weight)
     
     def forward(
         self,
@@ -237,6 +248,11 @@ class ChunkwiseDeltaAttention(nn.Module):
         # Concatenate chunks
         output = torch.cat(outputs, dim=1)  # [B, L, num_heads, head_dim]
         output = output.reshape(B, L, -1)   # [B, L, num_heads * head_dim]
+        
+        # Output gate: SiLU-gated (critical per GatedDeltaNet ablation)
+        gate = F.silu(self.output_gate(hidden_states))  # [B, L, num_heads * head_dim]
+        output = output * gate
+        
         output = self.o_proj(output)
         
         return self.dropout(output)
@@ -270,6 +286,10 @@ class ChunkwiseDeltaAttention(nn.Module):
         # Scale keys and queries
         k_scaled = k / norm_factor
         q_scaled = q / norm_factor
+        
+        # L2 normalize Q and K (critical for GatedDeltaNet — saves 3.4 PPL per ablation)
+        q_scaled = F.normalize(q_scaled, p=2, dim=-1)
+        k_scaled = F.normalize(k_scaled, p=2, dim=-1)
         
         # Apply beta gating to values
         beta_exp = beta[:, :, :, None]  # [B, Lc, n_h, 1]

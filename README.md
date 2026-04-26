@@ -69,7 +69,37 @@ you can choose where code tools run:
 
 `local` mode exposes `bash/read/write/edit` directly on the machine running the backend.
 In local mode, `hf_jobs` is disabled so training/experiments run on the local machine (not HF Jobs/Spaces).
+It also exposes `local_scheduler`, which can schedule user-configured watchdog checks (for example: wait N minutes, check whether a matching training process is still running, then stop it safely). The chat shortcut `/cron [interval in minutes] <prompt to send to agent or llm>` schedules a repeated prompt for the active session. In the Web UI, use the clock icon in the top bar to configure the same prompt cron or process-watchdog tasks graphically.
 Use only in trusted environments.
+
+### Telegram bot
+
+Set `TELEGRAM_BOT_TOKEN` to enable an optional Telegram long-polling bot, or configure it from the Web UI via Settings → Telegram bot. Each Telegram chat gets its own ML Intern session. UI-saved config is stored at `~/.cache/ml-intern/telegram_bot.json`.
+
+Optional environment settings:
+
+```bash
+TELEGRAM_BOT_TOKEN=123:abc
+TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321  # optional allow-list
+TELEGRAM_EXECUTION_MODE=local                  # default: local; use sandbox for HF sandbox tools
+TELEGRAM_TURN_TIMEOUT_SECONDS=3600             # optional
+```
+
+Telegram commands:
+
+```text
+/start or /help         # help
+/commands               # list bot commands
+/new                    # fresh ML Intern session
+/status                 # current session status
+/models                 # list available models
+/model <id|number|label> # switch model for this chat session
+/sessions               # show current chat session id
+/crons                  # list prompt cron tasks
+/cancelcron <id>        # cancel a prompt cron
+/interrupt              # interrupt current agent turn
+/cron [minutes] prompt  # schedule repeated prompt for that chat session
+```
 
 ## Architecture
 

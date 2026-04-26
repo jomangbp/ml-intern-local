@@ -1393,25 +1393,398 @@ def cli():
     # Suppress whoosh invalid escape sequence warnings (third-party, unfixed upstream)
     warnings.filterwarnings("ignore", category=SyntaxWarning, module="whoosh")
 
-    parser = argparse.ArgumentParser(description="Hugging Face Agent CLI")
-    parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
-    parser.add_argument("--model", "-m", default=None, help=f"Model to use (default: from config)")
-    parser.add_argument("--max-iterations", type=int, default=None,
-                        help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
-    parser.add_argument("--no-stream", action="store_true",
-                        help="Disable token streaming (use non-streaming LLM calls)")
+    parser = argparse.ArgumentParser(description="ML Intern CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # ── Default: agent chat ──
+    chat_parser = subparsers.add_parser("chat", help="Interactive agent chat (default)")
+    chat_parser.add_argument("prompt", nargs="?", default=None, help="Run headlessly with this prompt")
+    chat_parser.add_argument("--model", "-m", default=None, help="Model to use")
+    chat_parser.add_argument("--max-iterations", type=int, default=None, help="Max LLM requests per turn")
+    chat_parser.add_argument("--no-stream", action="store_true", help="Disable streaming")
+
+    # ── Gateway: Telegram bot bridge ──
+    gw_parser = subparsers.add_parser("gateway", help="Start Telegram gateway (bridges Telegram ↔ ML Intern)")
+    gw_parser.add_argument("gateway_action", nargs="?", default=None, choices=["start", "stop", "restart", "status"], help="Action: start (default), stop, restart, status")
+    gw_parser.add_argument("--port", type=int, default=7860, help="ML Intern server port (default: 7860)")
+    gw_parser.add_argument("--host", default="127.0.0.1", help="ML Intern server host")
+    gw_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    gw_parser.add_argument("--detach", "-d", action="store_true", help="Run gateway in background (daemon)")
+
+    # Parse with backwards compat: no subcommand or unknown arg → chat mode
+    # If first arg is not "chat" or "gateway", inject "chat" before parsing
+    if sys.argv[1:] and sys.argv[1] not in ("chat", "gateway", "-h", "--help"):
+        sys.argv.insert(1, "chat")
+
     args = parser.parse_args()
 
-    try:
-        if args.prompt:
-            max_iter = args.max_iterations
-            if max_iter is not None and max_iter < 0:
-                max_iter = 10_000  # effectively unlimited
-            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
+    if args.command == "gateway":
+        _gateway_dispatch(args)
+    else:
+        # Default: chat / headless mode
+        prompt = getattr(args, "prompt", None)
+        model = getattr(args, "model", None)
+        max_iter = getattr(args, "max_iterations", None)
+        no_stream = getattr(args, "no_stream", False)
+        if max_iter is not None and max_iter < 0:
+            max_iter = 10_000
+        try:
+            if prompt:
+                asyncio.run(headless_main(prompt, model=model, max_iterations=max_iter, stream=not no_stream))
+            else:
+                asyncio.run(main())
+        except KeyboardInterrupt:
+            print("\n\nGoodbye!")
+
+
+def _gateway_dispatch(args) -> None:
+    """Route gateway subcommands: start, stop, restart, status."""
+    from pathlib import Path as _P
+
+    pid_file = _P.home() / ".cache" / "ml-intern" / "gateway.pid"
+    action = getattr(args, "gateway_action", None) or "start"
+
+    if action == "stop":
+        _gateway_stop(pid_file)
+    elif action == "restart":
+        _gateway_stop(pid_file)
+        print()
+        if getattr(args, "detach", False):
+            _gateway_start(args, pid_file, detach=True)
         else:
-            asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\nGoodbye!")
+            _run_gateway(args)
+    elif action == "status":
+        _gateway_status(pid_file, args)
+    else:
+        # start (default)
+        if getattr(args, "detach", False):
+            _gateway_start(args, pid_file, detach=True)
+        else:
+            _run_gateway(args)
+
+
+def _gateway_stop(pid_file: "Path") -> None:
+    """Stop a running gateway process."""
+    import signal as _sig
+
+    if not pid_file.exists():
+        # Try to find by port as fallback
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["ss", "-ltnp", f"sport = :7860"],
+                capture_output=True, text=True, timeout=5,
+            )
+            import re
+            pids = set(re.findall(r"pid=(\d+)", result.stdout))
+            if pids:
+                for p in pids:
+                    try:
+                        os.kill(int(p), _sig.SIGTERM)
+                        print(f"🛑 Killed process {p}")
+                    except ProcessLookupError:
+                        pass
+                print("✅ Gateway stopped.")
+                return
+        except Exception:
+            pass
+        print("⚪ Gateway is not running (no PID file, no process on port 7860).")
+        return
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        print("⚪ Invalid PID file. Removing.")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    # Check if alive
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        print("⚪ Gateway is not running (stale PID).")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    # Kill it
+    try:
+        os.kill(pid, _sig.SIGTERM)
+        print(f"🛑 Sent SIGTERM to gateway (PID {pid})")
+    except ProcessLookupError:
+        print("⚪ Gateway already stopped.")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    # Wait for it to die
+    import time
+    for _ in range(30):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.2)
+        except ProcessLookupError:
+            break
+
+    pid_file.unlink(missing_ok=True)
+    print("✅ Gateway stopped.")
+
+
+def _gateway_start(args, pid_file: "Path", detach: bool = False) -> None:
+    """Start the gateway, optionally as a background daemon."""
+    # Check if already running
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            print(f"❌ Gateway already running (PID {old_pid}). Use `ml-intern gateway stop` first.")
+            return
+        except (ValueError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+
+    # Check port
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ss", "-ltnp", f"sport = :{args.port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        import re
+        if re.search(r"pid=\d+", result.stdout):
+            print(f"❌ Port {args.port} already in use. Stop existing server first.")
+            return
+    except Exception:
+        pass
+
+    if detach:
+        # Start in background
+        import subprocess
+        cmd = [sys.executable, "-m", "agent.main", "gateway", "--port", str(args.port), "--host", args.host]
+        if args.verbose:
+            cmd.append("--verbose")
+        log_file = _P.home() / ".cache" / "ml-intern" / "gateway.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=open(log_file, "a"),
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        pid_file.write_text(str(proc.pid))
+        print(f"✅ Gateway started in background (PID {proc.pid})")
+        print(f"   Log: {log_file}")
+        print(f"   Web: http://{args.host}:{args.port}")
+        print(f"   Stop: ml-intern gateway stop")
+    else:
+        asyncio.run(_run_gateway(args))
+
+
+def _gateway_status(pid_file: "Path", args) -> None:
+    """Show gateway status."""
+    import subprocess
+
+    pid = None
+    alive = False
+
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            alive = True
+        except (ValueError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+            pid = None
+
+    # Check by port as fallback
+    port_pid = None
+    try:
+        result = subprocess.run(
+            ["ss", "-ltnp", f"sport = :{args.port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        import re
+        match = re.search(r"pid=(\d+)", result.stdout)
+        if match:
+            port_pid = int(match.group(1))
+    except Exception:
+        pass
+
+    print("📡 ML Intern Gateway Status")
+    print(f"   PID file:    {pid_file}")
+    print(f"   PID:         {pid or 'not found'}")
+    print(f"   Port 7860:   {'occupied by PID ' + str(port_pid) if port_pid else 'free'}")
+    print(f"   State:       {'🟢 Running' if alive else '⚪ Stopped'}")
+
+    # If running, hit health endpoint
+    if alive or port_pid:
+        try:
+            import urllib.request
+            resp = urllib.request.urlopen(f"http://{args.host}:{args.port}/api/health", timeout=3)
+            import json as _json
+            data = _json.loads(resp.read())
+            print(f"   Health:      {data.get('status', '?')}")
+            print(f"   Sessions:    {data.get('active_sessions', 0)}/{data.get('max_sessions', '?')}")
+        except Exception:
+            print(f"   Health:      ❌ no response")
+
+        # Check Telegram
+        try:
+            resp = urllib.request.urlopen(f"http://{args.host}:{args.port}/auth/telegram/status", timeout=3)
+            data = _json.loads(resp.read())
+            tg = "🟢 Active" if data.get("running") else "⚪ Stopped"
+            print(f"   Telegram:    {tg}")
+        except Exception:
+            print(f"   Telegram:    ❓ unknown")
+
+
+def _kill_port(port: int) -> bool:
+    """Kill any process listening on the given port. Returns True if something was killed."""
+    import subprocess, re, signal as _sig, time
+    try:
+        result = subprocess.run(
+            ["ss", "-ltnp", f"sport = :{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pids = set(re.findall(r"pid=(\d+)", result.stdout))
+        if not pids:
+            return False
+        for p in pids:
+            try:
+                os.kill(int(p), _sig.SIGTERM)
+            except ProcessLookupError:
+                pass
+        # Wait for them to die
+        for _ in range(30):
+            try:
+                result2 = subprocess.run(
+                    ["ss", "-ltnp", f"sport = :{port}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if not re.search(r"pid=\d+", result2.stdout):
+                    break
+            except Exception:
+                break
+            time.sleep(0.2)
+        return True
+    except Exception:
+        return False
+
+
+def _run_gateway(args) -> None:
+    """Start the ML Intern server + Telegram gateway as a single process.
+
+    This is the main entry point for `ml-intern gateway`.
+    It starts:
+      1. The FastAPI backend (uvicorn)
+      2. The Telegram bot (long-polling)
+
+    The Telegram bot connects to the same backend via the session manager,
+    so messages from Telegram go through the full agent pipeline.
+    """
+    import subprocess
+    import signal
+
+    print("""
+╔══════════════════════════════════════════╗
+║        ML Intern Gateway                 ║
+║   Telegram ↔ ML Intern Bridge            ║
+╚══════════════════════════════════════════╝
+""")
+
+    # Load .env
+    from dotenv import load_dotenv
+    from pathlib import Path
+    load_dotenv(Path(__file__).parent.parent / ".env")
+
+    # Auto-stop anything already on this port
+    if _kill_port(args.port):
+        print(f"🛑 Stopped existing process on port {args.port}")
+        time.sleep(0.5)
+
+    # Check Telegram token
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    config_path = Path(os.environ.get(
+        "ML_INTERN_TELEGRAM_CONFIG",
+        str(Path.home() / ".cache" / "ml-intern" / "telegram_bot.json"),
+    )).expanduser()
+
+    if not token and config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text())
+            token = str(cfg.get("token", "")).strip()
+        except Exception:
+            pass
+
+    if not token:
+        print("❌ TELEGRAM_BOT_TOKEN not configured.")
+        print()
+        print("Set it via:")
+        print("  1. Environment:  export TELEGRAM_BOT_TOKEN=<token>")
+        print("  2. Web UI:       Settings → Telegram → enter token")
+        print("  3. Config file:  ~/.cache/ml-intern/telegram_bot.json")
+        print()
+        print("Get a token from @BotFather on Telegram.")
+        sys.exit(1)
+
+    print(f"✅ Telegram token found: ...{token[-8:]}")
+    print(f"📡 Starting ML Intern server on {args.host}:{args.port}")
+    print(f"🤖 Starting Telegram gateway...")
+    print(f"   Press Ctrl+C to stop")
+    print()
+
+    # Set up logging
+    import logging as _gw_logging
+    log_level = _gw_logging.DEBUG if args.verbose else _gw_logging.INFO
+    _gw_logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+    # Start the backend server in the same process
+    import uvicorn
+
+    # Patch sys.path so backend imports work
+    backend_dir = str(Path(__file__).parent.parent / "backend")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    # The backend's lifespan handler automatically starts the Telegram bot
+    # when TELEGRAM_BOT_TOKEN is set (or configured via UI).
+    # We just need to run the server.
+    os.environ["TELEGRAM_BOT_TOKEN"] = token  # ensure the server sees it
+
+    config = uvicorn.Config(
+        "main:app",
+        host=args.host,
+        port=args.port,
+        log_level="info" if not args.verbose else "debug",
+    )
+    server = uvicorn.Server(config)
+
+    print("""Gateway running:
+  • Web UI:      http://{}:{}
+  • Telegram:    Bot active (polling)
+  • Commands:    /start /help /models /gateway /status /interrupt
+""".format(args.host, args.port))
+
+    # Write PID file
+    pid_file = Path.home() / ".cache" / "ml-intern" / "gateway.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()))
+
+    async def _serve():
+        # Handle graceful shutdown
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(server.shutdown()))
+            except NotImplementedError:
+                pass
+        await server.serve()
+
+    asyncio.run(_serve())
+    print("Gateway stopped.")
+    # Cleanup PID file
+    pid_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

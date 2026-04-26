@@ -53,6 +53,23 @@
 
 ---
 
+## 2026-04-24 addendum — local scheduler / training watchdog
+
+- **File:** `agent/tools/local_scheduler_tool.py` (new file)
+- **Tool name:** `local_scheduler`
+- **Purpose:** Let the agent program a cron/loop-style local watchdog from chat.
+- **Actions:** `create`, `list`, `status`, `cancel`, `run_once`
+- **Training watchdog behavior:** wait a user-configured interval, match training processes by a specific command-line substring/regex, send `TERM`, wait `grace_seconds`, then escalate to `SIGKILL` if needed.
+- **Registered in:** `agent/core/tools.py` for local mode sessions.
+- **State/logs:** `~/.cache/ml-intern/scheduled_tasks/`
+- **Verified:** py_compile, local-mode tool registration, one-shot scheduled command smoke test, process-stop smoke test, frontend production build, and scheduler REST API smoke test.
+- **UI:** Added a top-bar clock button that opens a graphical scheduler dialog for creating, running, listing, refreshing, and cancelling prompt cron or watchdog tasks.
+- **Slash command:** `/cron [interval in minutes] <prompt to send to agent or llm>` schedules a repeating prompt for the active session.
+- **UI live refresh:** Active sessions now periodically hydrate/reconnect while visible, so cron-generated turns show up without manually refreshing the browser.
+- **Telegram:** Added optional `TELEGRAM_BOT_TOKEN` long-polling bot integration with `/start`, `/new`, regular prompts, and `/cron [minutes] <prompt>` per chat session.
+
+---
+
 ## FAIL ❌
 
 ### 1. Backend `nohup + disown` doesn't survive shell exit
@@ -71,10 +88,11 @@
 | `agent/context_manager/manager.py` | System prompt updated to explain local mode behavior |
 | `README.md` | Clarified local mode disables hf_jobs |
 
-### New files (1)
+### New files (2)
 | File | Purpose |
 |------|---------|
 | `agent/tools/local_training_tool.py` | Local training tool with trackio URL extraction |
+| `agent/tools/local_scheduler_tool.py` | Local cron/loop-style scheduled task and training watchdog tool |
 
 ### Build artifact
 | File | Purpose |
@@ -99,6 +117,11 @@ create_builtin_tools(local_mode=True)
         │       └─ runs bash command locally
         │       └─ extracts Trackio URL from output
         │       └─ returns local dashboard URL (not HF Space)
+        │
+        ├─ get_local_scheduler_tool() → local_scheduler
+        │       └─ schedules one-shot or repeating local checks
+        │       └─ can stop matching training processes after N minutes
+        │       └─ supports list/status/cancel for watchdog tasks
         │
         └─ other tools (research, docs, hf_repo_*, github_*, etc.)
 

@@ -209,7 +209,8 @@ class ContextManager:
                 f"For training/experiments in local mode:\n"
                 f"- Run training directly with local bash/python commands.\n"
                 f"- If tracking is requested, install and use trackio locally (not via HF Jobs/Spaces).\n"
-                f"- Return local run instructions/log paths and any local dashboard URL generated on this machine."
+                f"- Use local_scheduler when the user asks for a cron/loop/watchdog, delayed check, or automatic stop of a still-running training process.\n"
+                f"- Return local run instructions/log paths, scheduler task IDs, and any local dashboard URL generated on this machine."
             )
             static_prompt += local_context
 

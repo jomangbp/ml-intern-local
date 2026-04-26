@@ -385,11 +385,13 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
     if local_mode:
         from agent.tools.local_tools import get_local_tools
         from agent.tools.local_training_tool import get_local_training_tool
+        from agent.tools.local_scheduler_tool import get_local_scheduler_tool
         # Local mode is strictly host-execution mode:
         # - use local bash/read/write/edit
         # - use local_training for experiment jobs (no hf_jobs — no HF Spaces)
+        # - use local_scheduler for user-configured cron/loop watchdogs
         tools = [t for t in tools if t.name != HF_JOBS_TOOL_SPEC["name"]]
-        tools = get_local_tools() + [get_local_training_tool()] + tools
+        tools = get_local_tools() + [get_local_training_tool(), get_local_scheduler_tool()] + tools
     else:
         tools = get_sandbox_tools() + tools
 

@@ -603,43 +603,55 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         saveMessages(sessionId, uiMsgs);
       }
 
-      // If the backend is still processing, reconnect to the live event stream
+      // If the backend is still processing, reconnect to the live event stream.
+      // Cron prompts can start backend processing without a user-initiated SSE
+      // request, so this path must also run periodically while the tab is open.
       if (info?.is_processing) {
         updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'thinking' } });
 
-        // Stop any previous reconnection
-        stopReconnect();
+        if (!reconnectAbortRef.current) {
+          // Start live event subscription only once; periodic refreshes should
+          // not abort/restart the stream every few seconds.
+          const abort = new AbortController();
+          reconnectAbortRef.current = abort;
+          consumeEventStream(abort.signal);
+        }
 
-        // Start live event subscription
-        const abort = new AbortController();
-        reconnectAbortRef.current = abort;
-        consumeEventStream(abort.signal);
+        if (!pollTimerRef.current) {
+          // Poll messages every 3 s so the chat message list stays up-to-date
+          // (the event stream gives us real-time status but not full message diffs)
+          pollTimerRef.current = setInterval(async () => {
+            const fresh = await hydrateMessages();
+            if (!fresh) return;
+            const msgs = llmMessagesToUIMessages(fresh.data, fresh.pendingIds, chatActionsRef.current.messages);
 
-        // Poll messages every 3 s so the chat message list stays up-to-date
-        // (the event stream gives us real-time status but not full message diffs)
-        pollTimerRef.current = setInterval(async () => {
-          const fresh = await hydrateMessages();
-          if (!fresh) return;
-          const msgs = llmMessagesToUIMessages(fresh.data, fresh.pendingIds, chatActionsRef.current.messages);
+            const currentCount = chatActionsRef.current.messages.length;
+            if (msgs.length > currentCount || currentCount === 0) {
+              chat.setMessages(msgs);
+              saveMessages(sessionId, msgs);
+            }
 
-          const currentCount = chatActionsRef.current.messages.length;
-          if (msgs.length > currentCount || currentCount === 0) {
-            chat.setMessages(msgs);
-            saveMessages(sessionId, msgs);
-          } 
-
-          // If backend stopped processing, clean up
-          if (fresh.info && !fresh.info.is_processing) {
-            updateSession(sessionId, { isProcessing: false });
-            stopReconnect();
-          }
-        }, 3000);
+            // If backend stopped processing, clean up
+            if (fresh.info && !fresh.info.is_processing) {
+              updateSession(sessionId, { isProcessing: false });
+              stopReconnect();
+            }
+          }, 3000);
+        }
+      } else {
+        updateSession(sessionId, { isProcessing: false });
       }
     };
 
     document.addEventListener('visibilitychange', onVisible);
+    const activeRefreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && isActiveRef.current) {
+        onVisible();
+      }
+    }, 5000);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(activeRefreshTimer);
       stopReconnect();
     };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps

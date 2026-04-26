@@ -280,6 +280,62 @@ class SessionManager:
         except Exception as e:
             logger.warning("Failed to persist provider keys for user %s to %s: %s", user_id, path, e)
 
+    def _write_provider_keys_to_repo_env(self, keys: dict[str, str]) -> None:
+        """Persist provider keys to the repo-root .env file.
+
+        This is the canonical location shared by all sessions (web, Telegram,
+        etc.).  Keys written here are available via ``os.environ`` after the
+        next server restart, and are read directly by the provider key lookup.
+        """
+        from pathlib import Path
+
+        # Resolve repo root: backend/..
+        repo_env = Path(__file__).parent.parent / ".env"
+
+        try:
+            # Read existing .env to preserve other vars
+            existing_lines: list[str] = []
+            if repo_env.exists():
+                existing_lines = repo_env.read_text(encoding="utf-8").splitlines()
+
+            # Build updated .env: keep non-provider lines, replace/add provider lines
+            provider_vars = {"MINIMAX_API_KEY", "ZAI_API_KEY"}
+            kept: list[str] = []
+            for line in existing_lines:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    var_name = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+                    if var_name not in provider_vars:
+                        kept.append(line)
+                else:
+                    kept.append(line)
+
+            # Append provider keys
+            if keys.get("minimax"):
+                kept.append(f"MINIMAX_API_KEY={keys['minimax']}")
+            if keys.get("zai"):
+                kept.append(f"ZAI_API_KEY={keys['zai']}")
+
+            content = "\n".join(kept) + "\n"
+            tmp = repo_env.with_suffix(".env.tmp")
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(repo_env)
+            try:
+                repo_env.chmod(0o600)
+            except Exception:
+                pass
+
+            # Also inject into the current process env so sessions
+            # created during this process lifetime see the new keys.
+            if keys.get("minimax"):
+                os.environ["MINIMAX_API_KEY"] = keys["minimax"]
+            if keys.get("zai"):
+                os.environ["ZAI_API_KEY"] = keys["zai"]
+
+            logger.info("Provider keys saved to %s", repo_env)
+        except Exception as e:
+            logger.warning("Failed to persist provider keys to repo .env: %s", e)
+
     def _migrate_legacy_provider_keys_file(self) -> None:
         """Migrate old JSON provider key storage into per-user workspace .env files."""
         path = self._legacy_provider_keys_file
@@ -344,20 +400,27 @@ class SessionManager:
         return keys
 
     def set_user_provider_keys(self, user_id: str, keys: dict[str, str] | None) -> dict[str, str]:
-        """Set provider keys for a user and propagate to active sessions."""
+        """Set provider keys for a user and propagate to active sessions.
+
+        Keys are persisted to the repo-root .env so all sessions (web,
+        Telegram, etc.) can access them via environment variables.
+        """
         normalized = self._normalize_provider_keys(keys)
 
         # Keep cache in sync
         self.user_provider_keys[user_id] = normalized
 
-        # Persist to user's workspace .env
+        # Persist to repo-root .env
+        self._write_provider_keys_to_repo_env(normalized)
+
+        # Also write to workspace for backwards compat
         self._write_provider_keys_to_env(user_id, normalized)
 
-        # Propagate to active sessions for this user
+        # Propagate to ALL active sessions (not just same user)
+        # since repo .env is shared across all sessions.
         for s in self.sessions.values():
-            if s.user_id == user_id:
-                s.provider_keys = normalized.copy()
-                s.session.provider_keys = normalized.copy()
+            s.provider_keys = normalized.copy()
+            s.session.provider_keys = normalized.copy()
 
         return normalized.copy()
 
