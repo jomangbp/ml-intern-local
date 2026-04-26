@@ -125,7 +125,6 @@ async def summarize_messages(
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )
-    )
     response = await acompletion(
         messages=prompt_messages,
         max_completion_tokens=max_tokens,

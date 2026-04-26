@@ -358,7 +358,13 @@ def _resolve_llm_params(
                         },
                     }
                     if reasoning_effort:
-                        params["reasoning_effort"] = reasoning_effort
+                        if reasoning_effort not in _OPENAI_EFFORTS:
+                            if strict:
+                                raise UnsupportedEffortError(
+                                    f"OpenAI doesn't accept effort={reasoning_effort!r}"
+                                )
+                        else:
+                            params["reasoning_effort"] = reasoning_effort
                     return params
 
             api_key = explicit_openai_key or codex_key
@@ -367,6 +373,18 @@ def _resolve_llm_params(
             if os.environ.get("OPENAI_API_BASE"):
                 params["api_base"] = os.environ.get("OPENAI_API_BASE")
 
+            # OpenAI effort surface (gpt/o-series)
+            if reasoning_effort:
+                if reasoning_effort not in _OPENAI_EFFORTS:
+                    if strict:
+                        raise UnsupportedEffortError(
+                            f"OpenAI doesn't accept effort={reasoning_effort!r}"
+                        )
+                else:
+                    params["reasoning_effort"] = reasoning_effort
+            return params
+
+        # Anthropic effort surface
         if reasoning_effort:
             level = reasoning_effort
             if level == "minimal":
@@ -382,22 +400,9 @@ def _resolve_llm_params(
                 # passed top-level: LiteLLM forwards unknown params into
                 # the request body for Anthropic, so ``output_config``
                 # reaches the API. ``extra_body`` does NOT work here —
-                # Anthropic rejects it as "Extra inputs are not
-                # permitted".
+                # Anthropic rejects it as "Extra inputs are not permitted".
                 params["thinking"] = {"type": "adaptive"}
                 params["output_config"] = {"effort": level}
-        return params
-
-    if model_name.startswith("openai/"):
-        params = {"model": model_name}
-        if reasoning_effort:
-            if reasoning_effort not in _OPENAI_EFFORTS:
-                if strict:
-                    raise UnsupportedEffortError(
-                        f"OpenAI doesn't accept effort={reasoning_effort!r}"
-                    )
-            else:
-                params["reasoning_effort"] = reasoning_effort
         return params
 
 
