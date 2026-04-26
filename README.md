@@ -1,277 +1,417 @@
 <p align="center">
-  <img src="frontend/public/smolagents.webp" alt="smolagents logo" width="160" />
+  <img src="frontend/public/smolagents.webp" alt="ML Intern" width="120" />
+  <h1 align="center">ML Intern Local</h1>
+  <p align="center">
+    Autonomous ML engineering assistant with Telegram gateway, local job management,<br/>
+    approval cockpit, and persistent scheduling — all running on your machine.
+  </p>
 </p>
 
-# ML Intern
+---
 
-An ML intern that autonomously researches, writes, and ships good quality ML releated code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+## Features
+
+- **Autonomous ML agent** — researches papers, writes training code, runs experiments
+- **Web UI** — React + MUI dashboard with real-time streaming chat
+- **Telegram gateway** — full bot with inline menus, model switching, approval flow
+- **Local execution** — runs training directly on your GPU(s), no sandbox needed
+- **HF sandbox mode** — optional HuggingFace Jobs for cloud compute
+- **Persistent cron** — schedule recurring prompts that survive restarts
+- **Job manager** — start/stop/kill/monitor local training jobs with per-job logs
+- **Approval cockpit** — approve or reject sensitive operations from Telegram or Web UI
+- **RBAC identity** — multi-user roles (owner/admin/user/viewer) for Telegram access
+- **Event store** — append-only audit log for all gateway operations
+
+---
 
 ## Quick Start
 
-### Installation
+### Prerequisites
+
+- **Python 3.11+**
+- **Node.js 18+** (for frontend)
+- **[uv](https://docs.astral.sh/uv/)** — fast Python package manager
+- A **provider API key** (at least one): Anthropic, OpenAI, MiniMax, or Z.ai
+
+### 1. Clone & Install
 
 ```bash
-git clone git@github.com:huggingface/ml-intern.git
-cd ml-intern
+git clone https://github.com/jomangbp/ml-intern-local.git
+cd ml-intern-local
+
+# Install Python backend + CLI
 uv sync
 uv tool install -e .
+
+# Install frontend (optional, for Web UI)
+cd frontend
+npm install
+cd ..
 ```
 
-#### That's it. Now `ml-intern` works from any directory:
+### 2. Configure API Keys
+
+Copy the example env file and fill in your keys:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your provider keys:
+
+```ini
+# At least one provider is required:
+
+# HuggingFace (required for dataset/hub access)
+HF_TOKEN=hf_...
+
+# Anthropic (for Claude models)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI (for GPT models)
+OPENAI_API_KEY=sk-...
+
+# MiniMax Token Plan — https://platform.minimax.io
+MINIMAX_API_KEY=...
+
+# Z.ai dev platform — https://docs.z.ai
+ZAI_API_KEY=...
+```
+
+### 3. Run
+
+**CLI (interactive chat):**
 
 ```bash
 ml-intern
 ```
 
-Create a `.env` file in the project root (or export these in your shell):
-
-```bash
-ANTHROPIC_API_KEY=<your-anthropic-api-key> # if using anthropic models
-HF_TOKEN=<your-hugging-face-token>
-GITHUB_TOKEN=<github-personal-access-token> 
-# Optional (web backend): enable local host filesystem tools in UI sessions
-# WARNING: grants bash/read/write/edit on the machine running the backend
-ML_INTERN_LOCAL_MODE=1
-```
-If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch. To get a GITHUB_TOKEN follow the tutorial [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
-
-### Usage
-
-**Interactive mode** (start a chat session):
-
-```bash
-ml-intern
-```
-
-**Headless mode** (single prompt, auto-approve):
+**CLI (single prompt, auto-run):**
 
 ```bash
 ml-intern "fine-tune llama on my dataset"
 ```
 
-**Options:**
+**Web UI + Backend:**
 
 ```bash
-ml-intern --model anthropic/claude-opus-4-6 "your prompt"
-ml-intern --max-iterations 100 "your prompt"
-ml-intern --no-stream "your prompt"
+# Terminal 1: backend (API on :7860)
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 7860
+
+# Terminal 2: frontend (dev server on :5173)
+cd frontend
+npm run dev
 ```
 
-### Web UI execution mode
+Open `http://localhost:5173` for the dashboard.
 
-When creating a backend session (`POST /api/session` or `POST /api/session/restore-summary`),
-you can choose where code tools run:
+---
 
-```json
-{ "execution_mode": "sandbox" }   // default: HF sandbox tools
-{ "execution_mode": "local" }     // local host tools (no sandbox deployment)
+## Telegram Bot Setup
+
+### 1. Create a Bot
+
+1. Open Telegram, search for **@BotFather**
+2. Send `/newbot` and follow the prompts
+3. Copy the bot token (format: `123456:ABC-DEF...`)
+
+### 2. Get Your Chat ID
+
+Send any message to your bot, then visit:
+
+```
+https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
 ```
 
-`local` mode exposes `bash/read/write/edit` directly on the machine running the backend.
-In local mode, `hf_jobs` is disabled so training/experiments run on the local machine (not HF Jobs/Spaces).
-It also exposes `local_scheduler`, which can schedule user-configured watchdog checks (for example: wait N minutes, check whether a matching training process is still running, then stop it safely). The chat shortcut `/cron [interval in minutes] <prompt to send to agent or llm>` schedules a repeated prompt for the active session. In the Web UI, use the clock icon in the top bar to configure the same prompt cron or process-watchdog tasks graphically.
-Use only in trusted environments.
+Look for `"chat":{"id": 123456789}` — that number is your chat ID.
 
-### Telegram bot
+### 3. Configure
 
-Set `TELEGRAM_BOT_TOKEN` to enable an optional Telegram long-polling bot, or configure it from the Web UI via Settings → Telegram bot. Each Telegram chat gets its own ML Intern session. UI-saved config is stored at `~/.cache/ml-intern/telegram_bot.json`.
+Add to your `.env`:
 
-Optional environment settings:
-
-```bash
-TELEGRAM_BOT_TOKEN=123:abc
-TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321  # optional allow-list
-TELEGRAM_EXECUTION_MODE=local                  # default: local; use sandbox for HF sandbox tools
-TELEGRAM_TURN_TIMEOUT_SECONDS=3600             # optional
+```ini
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
+TELEGRAM_EXECUTION_MODE=local
 ```
 
-Telegram commands:
+Or configure from the **Web UI** → Settings → Telegram Bot.
 
-```text
-/start or /help         # help
-/commands               # list bot commands
-/new                    # fresh ML Intern session
-/status                 # current session status
-/models                 # list available models
-/model <id|number|label> # switch model for this chat session
-/sessions               # show current chat session id
-/crons                  # list prompt cron tasks
-/cancelcron <id>        # cancel a prompt cron
-/interrupt              # interrupt current agent turn
-/cron [minutes] prompt  # schedule repeated prompt for that chat session
-```
+### 4. Start the Gateway
+
+The Telegram bot starts automatically when the backend launches if `TELEGRAM_BOT_TOKEN` is set.
+
+### Bot Commands
+
+| Command | Description |
+|---|---|
+| `/start` | Show interactive menu |
+| `/new` | Create fresh session |
+| `/models` | Choose model (inline keyboard) |
+| `/status` | Session status |
+| `/jobs` | List running jobs |
+| `/logs <id>` | View job logs |
+| `/kill <id>` | Kill a running job |
+| `/cron <min> <prompt>` | Schedule recurring prompt |
+| `/approvals` | List pending approvals |
+| `/interrupt` | Stop current agent turn |
+
+---
+
+## Supported Models
+
+| Model | Provider | Key Needed |
+|---|---|---|
+| Claude Opus 4.6 | Anthropic | `ANTHROPIC_API_KEY` |
+| GPT-5.3 / 5.4 / 5.5 | OpenAI | `OPENAI_API_KEY` |
+| GPT-5.5 Codex | OpenAI | `OPENAI_API_KEY` |
+| MiniMax M2.7 | MiniMax | `MINIMAX_API_KEY` |
+| GLM 5.1 | Z.ai | `ZAI_API_KEY` |
+| Kimi K2.6 | HuggingFace | `HF_TOKEN` |
+
+Switch models on-the-fly via Telegram (`/models`) or the Web UI model selector.
+
+---
 
 ## Architecture
 
-### Component Overview
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         User/CLI                            │
-└────────────┬─────────────────────────────────────┬──────────┘
-             │ Operations                          │ Events
-             ↓ (user_input, exec_approval,         ↑
-      submission_queue  interrupt, compact, ...)  event_queue
-             │                                          │
-             ↓                                          │
-┌────────────────────────────────────────────────────┐  │
-│            submission_loop (agent_loop.py)         │  │
-│  ┌──────────────────────────────────────────────┐  │  │
-│  │  1. Receive Operation from queue             │  │  │
-│  │  2. Route to handler (run_agent/compact/...) │  │  │
-│  └──────────────────────────────────────────────┘  │  │
-│                      ↓                             │  │
-│  ┌──────────────────────────────────────────────┐  │  │
-│  │         Handlers.run_agent()                 │  ├──┤
-│  │                                              │  │  │
-│  │  ┌────────────────────────────────────────┐  │  │  │
-│  │  │  Agentic Loop (max 300 iterations)     │  │  │  │
-│  │  │                                        │  │  │  │
-│  │  │  ┌──────────────────────────────────┐  │  │  │  │
-│  │  │  │ Session                          │  │  │  │  │
-│  │  │  │  ┌────────────────────────────┐  │  │  │  │  │
-│  │  │  │  │ ContextManager             │  │  │  │  │  │
-│  │  │  │  │ • Message history          │  │  │  │  │  │
-│  │  │  │  │   (litellm.Message[])      │  │  │  │  │  │
-│  │  │  │  │ • Auto-compaction (170k)   │  │  │  │  │  │
-│  │  │  │  │ • Session upload to HF     │  │  │  │  │  │
-│  │  │  │  └────────────────────────────┘  │  │  │  │  │
-│  │  │  │                                  │  │  │  │  │
-│  │  │  │  ┌────────────────────────────┐  │  │  │  │  │
-│  │  │  │  │ ToolRouter                 │  │  │  │  │  │
-│  │  │  │  │  ├─ HF docs & research     │  │  │  │  │  │
-│  │  │  │  │  ├─ HF repos, datasets,    │  │  │  │  │  │
-│  │  │  │  │  │  jobs, papers           │  │  │  │  │  │
-│  │  │  │  │  ├─ GitHub code search     │  │  │  │  │  │
-│  │  │  │  │  ├─ Sandbox & local tools  │  │  │  │  │  │
-│  │  │  │  │  ├─ Planning               │  │  │  │  │  │
-│  │  │  │  │  └─ MCP server tools       │  │  │  │  │  │
-│  │  │  │  └────────────────────────────┘  │  │  │  │  │
-│  │  │  └──────────────────────────────────┘  │  │  │  │
-│  │  │                                        │  │  │  │
-│  │  │  ┌──────────────────────────────────┐  │  │  │  │
-│  │  │  │ Doom Loop Detector               │  │  │  │  │
-│  │  │  │ • Detects repeated tool patterns │  │  │  │  │
-│  │  │  │ • Injects corrective prompts     │  │  │  │  │
-│  │  │  └──────────────────────────────────┘  │  │  │  │
-│  │  │                                        │  │  │  │
-│  │  │  Loop:                                 │  │  │  │
-│  │  │    1. LLM call (litellm.acompletion)   │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    2. Parse tool_calls[]               │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    3. Approval check                   │  │  │  │
-│  │  │       (jobs, sandbox, destructive ops) │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    4. Execute via ToolRouter           │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    5. Add results to ContextManager    │  │  │  │
-│  │  │       ↓                                │  │  │  │
-│  │  │    6. Repeat if tool_calls exist       │  │  │  │
-│  │  └────────────────────────────────────────┘  │  │  │
-│  └──────────────────────────────────────────────┘  │  │
-└────────────────────────────────────────────────────┴──┘
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   CLI User   │  │  Web UI      │  │  Telegram    │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │                 │                  │
+       └────────┬────────┘                  │
+                │                           │
+        ┌───────▼───────┐          ┌────────▼────────┐
+        │  FastAPI       │          │  Telegram Bot   │
+        │  Backend       │◄────────►│  (subprocess    │
+        │  (:7860)       │  events  │   polling)      │
+        └───────┬───────┘          └─────────────────┘
+                │
+        ┌───────▼───────┐
+        │  Agent Loop   │
+        │  (max 300     │
+        │   iterations) │
+        └───────┬───────┘
+                │
+    ┌───────────┼───────────┐
+    │           │           │
+┌───▼──┐  ┌────▼────┐  ┌───▼──────┐
+│ HF   │  │ Local   │  │ Research │
+│ Tools│  │ Tools   │  │ Tools    │
+└──────┘  └─────────┘  └──────────┘
 ```
 
-### Agentic Loop Flow
+### Key Components
 
+| Component | Path | Description |
+|---|---|---|
+| Agent loop | `agent/core/agent_loop.py` | Iterative LLM tool-calling loop |
+| Session manager | `backend/session_manager.py` | Creates/restores agent sessions |
+| Telegram bot | `backend/telegram_bot.py` | Subprocess-based polling, Hermes-style display |
+| Identity/RBAC | `backend/gateway/identity.py` | Roles, permissions, command auth |
+| Approval store | `backend/approvals/approval_store.py` | Persistent approvals with auto-expiry |
+| Job manager | `backend/jobs/local_job_manager.py` | Start/stop/kill/monitor local jobs |
+| Event store | `backend/events/event_store.py` | Append-only JSONL audit trail |
+| Prompt cron | `backend/prompt_cron.py` | Persistent recurring prompt scheduler |
+| Model catalog | `backend/model_catalog.py` | Shared model list for UI + Telegram |
+| REST API | `backend/routes/` | Agent, auth, gateway endpoints |
+
+---
+
+## API Reference
+
+### Core Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/session` | Create new session |
+| `POST` | `/api/session/restore-summary` | Restore session |
+| `GET` | `/api/events/{session_id}` | SSE event stream |
+| `POST` | `/api/session/{id}/message` | Send message |
+| `POST` | `/api/session/{id}/interrupt` | Interrupt agent |
+| `DELETE` | `/api/session/{id}` | Delete session |
+
+### Gateway Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/gateway/health` | System health check |
+| `GET/POST` | `/api/jobs` | List / start jobs |
+| `POST` | `/api/jobs/{id}/stop` | Stop a job |
+| `POST` | `/api/jobs/{id}/kill` | Force-kill a job |
+| `GET` | `/api/jobs/{id}/logs` | Tail job logs |
+| `GET` | `/api/approvals` | List approvals |
+| `POST` | `/api/approvals/{id}/approve` | Approve request |
+| `POST` | `/api/approvals/{id}/reject` | Reject request |
+| `GET` | `/api/gateway/events` | Query event store |
+| `GET/POST` | `/api/crons` | List / create crons |
+| `DELETE` | `/api/crons/{id}` | Cancel a cron |
+
+### Telegram Config
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/telegram/config` | Get bot configuration |
+| `POST` | `/api/telegram/config` | Update bot config |
+| `POST` | `/api/telegram/start` | Start the bot |
+| `POST` | `/api/telegram/stop` | Stop the bot |
+
+---
+
+## Local Mode vs Sandbox Mode
+
+| Feature | Local Mode | Sandbox Mode |
+|---|---|---|
+| Execution | Your machine | HF cloud sandbox |
+| Training | Direct GPU access | HF Jobs |
+| File system | Full access | Isolated sandbox |
+| Tools | bash, read, write, edit, scheduler | sandbox_create, hf_jobs |
+| Setup | No extra config | Requires `HF_TOKEN` |
+| Default for Telegram | ✅ Yes | Optional |
+
+Set execution mode via:
+
+```ini
+# .env
+TELEGRAM_EXECUTION_MODE=local    # or sandbox
+ML_INTERN_LOCAL_MODE=1           # for Web UI
 ```
-User Message
-     ↓
-[Add to ContextManager]
-     ↓
-     ╔═══════════════════════════════════════════╗
-     ║      Iteration Loop (max 300)             ║
-     ║                                           ║
-     ║  Get messages + tool specs                ║
-     ║         ↓                                 ║
-     ║  litellm.acompletion()                    ║
-     ║         ↓                                 ║
-     ║  Has tool_calls? ──No──> Done             ║
-     ║         │                                 ║
-     ║        Yes                                ║
-     ║         ↓                                 ║
-     ║  Add assistant msg (with tool_calls)      ║
-     ║         ↓                                 ║
-     ║  Doom loop check                          ║
-     ║         ↓                                 ║
-     ║  For each tool_call:                      ║
-     ║    • Needs approval? ──Yes──> Wait for    ║
-     ║    │                         user confirm ║
-     ║    No                                     ║
-     ║    ↓                                      ║
-     ║    • ToolRouter.execute_tool()            ║
-     ║    • Add result to ContextManager         ║
-     ║         ↓                                 ║
-     ║  Continue loop ─────────────────┐         ║
-     ║         ↑                       │         ║
-     ║         └───────────────────────┘         ║
-     ╚═══════════════════════════════════════════╝
+
+---
+
+## RBAC Roles
+
+| Permission | Owner | Admin | User | Viewer |
+|---|:---:|:---:|:---:|:---:|
+| Run prompts | ✅ | ✅ | ✅ | ❌ |
+| View status/logs | ✅ | ✅ | ✅ | ✅ |
+| Select model | ✅ | ✅ | ✅ | ❌ |
+| Create cron | ✅ | ✅ | ✅ | ❌ |
+| Approve/reject | ✅ | ✅ | ❌ | ❌ |
+| Kill jobs | ✅ | ✅ | ❌ | ❌ |
+| Run bash/training | ✅ | ✅ | ❌ | ❌ |
+| Gateway admin | ✅ | ❌ | ❌ | ❌ |
+
+The first Telegram user is auto-assigned **owner** role. Subsequent users get **user** role.
+
+Identity store: `~/.cache/ml-intern/identities.json`
+
+---
+
+## Persistent State
+
+All runtime state lives under `~/.cache/ml-intern/`:
+
+| Path | Description |
+|---|---|
+| `events/events.jsonl` | Append-only audit trail |
+| `approvals/` | Pending/resolved approval records |
+| `jobs/` | Job records and per-job logs |
+| `crons/` | Persisted cron task definitions |
+| `identities.json` | User identity store |
+| `telegram_bot.json` | Telegram bot configuration |
+| `gateway.pid` | Gateway process PID |
+
+---
+
+## CLI Reference
+
+```bash
+# Interactive chat
+ml-intern
+
+# Single prompt (non-interactive)
+ml-intern "your prompt here"
+
+# With options
+ml-intern --model MiniMaxAI/MiniMax-M2.7 "prompt"
+ml-intern --max-iterations 100 "prompt"
+ml-intern --no-stream "prompt"
 ```
 
-## Events
-
-The agent emits the following events via `event_queue`:
-
-- `processing` - Starting to process user input
-- `ready` - Agent is ready for input
-- `assistant_chunk` - Streaming token chunk
-- `assistant_message` - Complete LLM response text
-- `assistant_stream_end` - Token stream finished
-- `tool_call` - Tool being called with arguments
-- `tool_output` - Tool execution result
-- `tool_log` - Informational tool log message
-- `tool_state_change` - Tool execution state transition
-- `approval_required` - Requesting user approval for sensitive operations
-- `turn_complete` - Agent finished processing
-- `error` - Error occurred during processing
-- `interrupted` - Agent was interrupted
-- `compacted` - Context was compacted
-- `undo_complete` - Undo operation completed
-- `shutdown` - Agent shutting down
+---
 
 ## Development
 
-### Adding Built-in Tools
+### Project Structure
 
-Edit `agent/core/tools.py`:
+```
+ml-intern-local/
+├── agent/                  # Core agent (tools, session, loop)
+│   ├── core/               # Agent loop, session, tools
+│   ├── prompts/            # System prompts (YAML)
+│   └── tools/              # Built-in tools
+├── backend/                # FastAPI backend
+│   ├── approvals/          # Approval store
+│   ├── events/             # Event store
+│   ├── gateway/            # Identity, routing, health
+│   ├── jobs/               # Local job manager
+│   ├── routes/             # API endpoints
+│   └── main.py             # App entrypoint
+├── configs/                # Agent configs
+├── frontend/               # React + MUI + Vite + TypeScript
+│   └── src/
+│       ├── components/     # UI components
+│       └── hooks/          # React hooks
+├── tests/                  # Test suite
+├── .env.example            # Template for environment variables
+└── pyproject.toml          # Python package config
+```
+
+### Running Tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+### Frontend Development
+
+```bash
+cd frontend
+npm run dev     # dev server with hot reload
+npm run build   # production build → static/
+```
+
+### Adding a New Model
+
+Edit `backend/model_catalog.py`:
 
 ```python
-def create_builtin_tools() -> list[ToolSpec]:
-    return [
-        ToolSpec(
-            name="your_tool",
-            description="What your tool does",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "param": {"type": "string", "description": "Parameter description"}
-                },
-                "required": ["param"]
-            },
-            handler=your_async_handler
-        ),
-        # ... existing tools
-    ]
+AVAILABLE_MODELS.append({
+    "id": "provider/model-name",
+    "label": "Display Name",
+    "provider": "provider_key",
+})
 ```
 
-### Adding MCP Servers
+### Adding a New Tool
 
-Edit `configs/main_agent_config.json`:
+Edit `agent/core/tools.py` — add a `ToolSpec` with name, description, JSON schema, and async handler.
 
-```json
-{
-  "model_name": "anthropic/claude-sonnet-4-5-20250929",
-  "mcpServers": {
-    "your-server-name": {
-      "transport": "http",
-      "url": "https://example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${YOUR_TOKEN}"
-      }
-    }
-  }
-}
-```
+---
 
-Note: Environment variables like `${YOUR_TOKEN}` are auto-substituted from `.env`.
+## Troubleshooting
+
+| Issue | Fix |
+|---|---|
+| Bot not receiving messages | Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_CHAT_IDS` in `.env` |
+| "Not authorized" on Telegram | Check `~/.cache/ml-intern/identities.json` — your user needs a valid role |
+| Model not found | Ensure the provider API key is set in `.env` |
+| Port 7860 in use | Kill stale process: `kill $(lsof -ti:7860)` |
+| Frontend won't connect | Ensure backend is running on `:7860` and frontend proxies to it |
+
+---
+
+## License
+
+This project is provided as-is. See individual dependency licenses for third-party terms.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and credential handling.
