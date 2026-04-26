@@ -39,6 +39,8 @@ import SessionChat from '@/components/SessionChat';
 import CodePanel from '@/components/CodePanel/CodePanel';
 import WelcomeScreen from '@/components/WelcomeScreen/WelcomeScreen';
 import SchedulerDialog from '@/components/SchedulerDialog';
+import JobsPanel from '@/components/JobsPanel';
+import ApprovalInbox from '@/components/ApprovalInbox';
 import { apiFetch } from '@/utils/api';
 import { getPreferredExecutionMode, setPreferredExecutionMode, type ExecutionMode } from '@/utils/executionMode';
 
@@ -720,6 +722,12 @@ export default function AppLayout() {
               >
                 <ScheduleIcon fontSize="small" />
               </IconButton>
+            </Tooltip>
+            <Tooltip title="Jobs & Approvals">
+              <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', mx: 0.5 }}>
+                <JobsPanel collapsed />
+                <ApprovalInbox collapsed />
+              </Box>
             </Tooltip>
             <Tooltip title="Settings">
               <IconButton
