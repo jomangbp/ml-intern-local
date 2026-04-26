@@ -60,16 +60,11 @@ cp .env.example .env
 Edit `.env` with your provider keys:
 
 ```ini
-# At least one provider is required:
-
 # HuggingFace (required for dataset/hub access)
 HF_TOKEN=hf_...
 
 # Anthropic (for Claude models)
 ANTHROPIC_API_KEY=sk-ant-...
-
-# OpenAI (for GPT models)
-OPENAI_API_KEY=sk-...
 
 # MiniMax Token Plan — https://platform.minimax.io
 MINIMAX_API_KEY=...
@@ -77,6 +72,24 @@ MINIMAX_API_KEY=...
 # Z.ai dev platform — https://docs.z.ai
 ZAI_API_KEY=...
 ```
+
+### OpenAI via Codex Subscription (free setup, no API key)
+
+GPT-5.x models are routed through your **ChatGPT Pro/Plus Codex subscription** —
+no paid API key required:
+
+```bash
+# 1. Install the Codex CLI
+npm install -g @openai/codex
+
+# 2. Authenticate (opens browser)
+codex login --device-auth
+
+# 3. Done — ml-intern auto-detects the token
+```
+
+The token is stored at `~/.config/codex/auth.json` and picked up automatically.
+You can also set `CODEX_AUTH_TOKEN` in `.env` if you prefer.
 
 ### 3. Run
 
@@ -161,14 +174,17 @@ The Telegram bot starts automatically when the backend launches if `TELEGRAM_BOT
 
 ## Supported Models
 
-| Model | Provider | Key Needed |
+| Model | Provider | Key / Auth |
 |---|---|---|
 | Claude Opus 4.6 | Anthropic | `ANTHROPIC_API_KEY` |
-| GPT-5.3 / 5.4 / 5.5 | OpenAI | `OPENAI_API_KEY` |
-| GPT-5.5 Codex | OpenAI | `OPENAI_API_KEY` |
+| GPT-5.3 / 5.4 / 5.5 | OpenAI | **Codex subscription** (no API key) |
+| GPT-5.5 Codex | OpenAI | **Codex subscription** (no API key) |
 | MiniMax M2.7 | MiniMax | `MINIMAX_API_KEY` |
 | GLM 5.1 | Z.ai | `ZAI_API_KEY` |
 | Kimi K2.6 | HuggingFace | `HF_TOKEN` |
+
+> **OpenAI note:** GPT models use your ChatGPT Pro/Plus subscription via the
+> Codex CLI. Run `codex login --device-auth` once — no `OPENAI_API_KEY` needed.
 
 Switch models on-the-fly via Telegram (`/models`) or the Web UI model selector.
 

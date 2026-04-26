@@ -349,7 +349,8 @@ class TelegramBotService:
 
     @property
     def running(self) -> bool:
-        return bool(self._task and not self._task.done() and self._running)
+        poll_alive = hasattr(self, '_poll_process') and self._poll_process and self._poll_process.poll() is None
+        return bool(self._running and poll_alive)
 
     def status(self) -> dict[str, Any]:
         return {
