@@ -173,23 +173,31 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{h}h{m:02d}m"
 
 
-# ── Stream Consumer (Hermes-style progressive edit) ───────────────
+# ── Stream Consumer (paragraph-split live delivery) ───────────────
 
 class StreamConsumer:
-    """Accumulates assistant text deltas and edits a single Telegram message.
+    """Streams assistant text to Telegram as multiple paragraph-sized messages.
 
-    Pattern from Hermes GatewayStreamConsumer:
-      1. on_delta() receives text chunks
-      2. Accumulates in buffer
-      3. Periodically edits a single message with the growing text
-      4. finish() sends final text
+    Instead of accumulating everything in one giant editable message, this
+    consumer splits text at paragraph boundaries (double-newline) and sends
+    each paragraph as its own Telegram message.
+
+    Flow:
+      1. on_delta() accumulates chunks into a pending buffer
+      2. run() loop checks for paragraph breaks every _STREAM_EDIT_INTERVAL
+      3. When a paragraph is complete (or on finish), it is sent as a new message
+      4. The current (last) paragraph is edited in-place to show live typing
     """
+
+    _PARAGRAPH_MIN = 80   # Min chars before we consider splitting
+    _PARAGRAPH_MAX = 3500 # Max chars per paragraph
 
     def __init__(self, bot: TelegramBotService, chat_id: int) -> None:
         self._bot = bot
         self._chat_id = chat_id
         self._buffer = ""
-        self._msg_id: int | None = None
+        self._sent_paragraphs: list[str] = []  # Already sent
+        self._current_msg_id: int | None = None  # Last paragraph being edited
         self._last_edit = 0.0
         self._done = asyncio.Event()
 
@@ -203,100 +211,164 @@ class StreamConsumer:
     def finish(self) -> None:
         self._done.set()
 
+    def _split_pending(self) -> tuple[list[str], str]:
+        """Split buffer into completable paragraphs + remaining tail.
+
+        A paragraph is completable if it ends with \n\n or is the final chunk.
+        """
+        remaining = self._buffer
+        ready: list[str] = []
+
+        while len(remaining) > self._PARAGRAPH_MAX:
+            # Force split at newline within range
+            cut = remaining.rfind("\n", 0, self._PARAGRAPH_MAX)
+            if cut < self._PARAGRAPH_MIN:
+                cut = self._PARAGRAPH_MAX
+            ready.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip("\n")
+
+        # Check for paragraph breaks (double newline) in remaining
+        while "\n\n" in remaining:
+            idx = remaining.index("\n\n")
+            para = remaining[:idx].rstrip()
+            if para:
+                ready.append(para)
+            remaining = remaining[idx + 2:].lstrip("\n")
+
+        return ready, remaining
+
+    async def _send_paragraph(self, text: str) -> None:
+        """Send a completed paragraph as a new Telegram message."""
+        if not text.strip():
+            return
+        # First finalize the previous live-edit message (if any)
+        if self._current_msg_id:
+            # Already showing this text via edit — just keep it
+            pass
+        msg_id = await self._bot._send_message(self._chat_id, text)
+        self._sent_paragraphs.append(text)
+        self._current_msg_id = msg_id
+
+    async def _update_live(self, text: str) -> None:
+        """Update the current paragraph in-place (live typing effect)."""
+        if not text.strip():
+            return
+        display = text[:3500]
+        now = time.monotonic()
+        if self._current_msg_id and now - self._last_edit >= _STREAM_EDIT_INTERVAL:
+            await self._bot._edit_message(self._chat_id, self._current_msg_id, display)
+            self._last_edit = now
+        elif not self._current_msg_id and len(text) >= _STREAM_BUFFER_THRESHOLD:
+            self._current_msg_id = await self._bot._send_message(self._chat_id, display)
+            self._last_edit = time.monotonic()
+
     async def run(self) -> None:
-        """Background task: periodically edit the stream message."""
+        """Background task: split text into paragraphs and deliver progressively."""
+        delivered_up_to = 0  # Byte offset into self._buffer that we've fully delivered
+
         while not self._done.is_set():
             try:
                 await asyncio.wait_for(self._done.wait(), timeout=_STREAM_EDIT_INTERVAL)
             except asyncio.TimeoutError:
                 pass
 
-            if not self._buffer:
+            if delivered_up_to >= len(self._buffer):
                 continue
 
-            display = f"💬 {self._buffer[:3500]}"
-            if self._msg_id:
-                now = time.monotonic()
-                if now - self._last_edit >= _STREAM_EDIT_INTERVAL:
-                    await self._bot._edit_message(self._chat_id, self._msg_id, display)
-                    self._last_edit = now
+            # Work with the undelivered portion
+            undelivered = self._buffer[delivered_up_to:]
+            ready, tail = self._split_pending()
+
+            # ready contains completed paragraphs from the full buffer
+            # We need to figure out which ones are new
+            for para in ready:
+                if para not in self._sent_paragraphs:
+                    await self._send_paragraph(para)
+                    self._sent_paragraphs.append(para)
+                    # Advance delivered offset past this paragraph
+                    idx = self._buffer.find(para, delivered_up_to)
+                    if idx >= 0:
+                        delivered_up_to = idx + len(para)
+                        # Skip trailing newlines
+                        while delivered_up_to < len(self._buffer) and self._buffer[delivered_up_to] == '\n':
+                            delivered_up_to += 1
+
+            # Update live for the tail (incomplete paragraph)
+            if tail:
+                await self._update_live(tail)
+
+        # Final flush: send any remaining text that wasn't delivered yet
+        remaining = self._buffer[delivered_up_to:].strip()
+        if remaining:
+            if self._current_msg_id:
+                await self._bot._edit_message(self._chat_id, self._current_msg_id, remaining[:3500])
             else:
-                if len(self._buffer) >= _STREAM_BUFFER_THRESHOLD:
-                    self._msg_id = await self._bot._send_message(self._chat_id, display)
-
-        # Final edit with complete text
-        if self._msg_id and self._buffer:
-            await self._bot._edit_message(
-                self._chat_id, self._msg_id,
-                f"💬 {self._buffer[:3500]}",
-            )
+                await self._bot._send_message(self._chat_id, remaining[:3500])
 
 
-# ── Progress Consumer (Hermes-style accumulated tool lines) ───────
+# ── Progress Consumer (per-tool messages) ─────────────────────────
 
 class ProgressConsumer:
-    """Accumulates tool progress lines into a single editable message.
+    """Sends each tool call as its own Telegram message and edits it on completion.
 
-    Pattern from Hermes send_progress_messages():
-      - Each tool call adds a line: 💻 bash: "python3 train.py"
-      - The message is edited in-place to show all lines
-      - Finished tools get ✅/❌ appended
+    Instead of accumulating all tool calls into a single message, this consumer
+    creates one message per tool call showing what's happening, then edits that
+    message with ✅/❌ + truncated output when the tool finishes.
+
+    This gives a real-time activity log like Hermes.
     """
 
     def __init__(self, bot: TelegramBotService, chat_id: int) -> None:
         self._bot = bot
         self._chat_id = chat_id
-        self._lines: list[str] = []
-        self._results: dict[int, str] = {}  # step index -> result text
-        self._msg_id: int | None = None
-        self._last_edit = 0.0
+        self._tool_msgs: dict[int, int] = {}   # step_idx -> msg_id
+        self._results: dict[int, str] = {}      # step_idx -> result text
+        self._step_count = 0
         self._lock = asyncio.Lock()
 
     @property
     def step_count(self) -> int:
-        return len(self._lines)
+        return self._step_count
 
-    def add_tool(self, tool: str, args: dict) -> int:
-        """Add a tool call line. Returns step index."""
-        idx = len(self._lines)
+    async def add_tool(self, tool: str, args: dict) -> int:
+        """Send a tool call as a new Telegram message. Returns step index."""
+        idx = self._step_count
+        self._step_count += 1
         line = _format_tool_line(tool, args)
-        self._lines.append(line)
+        msg_id = await self._bot._send_message(self._chat_id, f"⏳ {line}")
+        self._tool_msgs[idx] = msg_id
         return idx
 
-    def set_result(self, step_idx: int, tool: str, output: str, success: bool) -> None:
-        """Set result for a completed tool step."""
+    async def set_result(self, step_idx: int, tool: str, output: str, success: bool) -> None:
+        """Edit the tool message with result."""
         icon = _tool_icon(tool)
         status = "✅" if success else "❌"
-        # Update the line in-place
-        if step_idx < len(self._lines):
-            self._lines[step_idx] = f"{self._lines[step_idx]} {status}"
-        # Store full result
-        self._results[step_idx] = _format_tool_result(tool, output, success)
+        result_line = _format_tool_result(tool, output, success)
+        msg_id = self._tool_msgs.get(step_idx)
+        if msg_id:
+            await self._bot._edit_message(self._chat_id, msg_id, result_line)
+        else:
+            await self._bot._send_message(self._chat_id, result_line)
+        self._results[step_idx] = result_line
 
-    def cancel_step(self, step_idx: int) -> None:
-        if step_idx < len(self._lines):
-            self._lines[step_idx] = f"{self._lines[step_idx]} ⏹️"
+    async def cancel_step(self, step_idx: int) -> None:
+        msg_id = self._tool_msgs.get(step_idx)
+        if msg_id:
+            # Get the original line text — just edit to append ⏹️
+            await self._bot._edit_message(self._chat_id, msg_id, "⏹️ cancelled")
 
     async def flush(self) -> None:
-        """Send or edit the progress message."""
-        async with self._lock:
-            text = "\n".join(self._lines)
-            now = time.monotonic()
-            if self._msg_id and now - self._last_edit >= _PROGRESS_EDIT_INTERVAL:
-                await self._bot._edit_message(self._chat_id, self._msg_id, text)
-                self._last_edit = now
-            elif not self._msg_id and text:
-                self._msg_id = await self._bot._send_message(self._chat_id, text)
-                self._last_edit = time.monotonic()
+        """No-op — messages are sent immediately in add_tool/set_result."""
+        pass
 
     async def send_results(self) -> None:
-        """Send all tool results as separate messages (gateway mode)."""
-        for idx, result in self._results.items():
-            await self._bot._send_message(self._chat_id, result)
+        """No-op — results are already sent inline via set_result."""
+        pass
 
     @property
     def msg_id(self) -> int | None:
-        return self._msg_id
+        """Return first tool message id for compatibility."""
+        return next(iter(self._tool_msgs.values()), None)
 
 
 # ── Telegram Bot Service ──────────────────────────────────────────
@@ -1522,10 +1594,9 @@ class TelegramBotService:
                     args = data.get("arguments", {})
                     logger.debug("TG %d: tool_call %s", chat_id, tool_name)
                     if gateway and progress:
-                        idx = progress.add_tool(tool_name, args)
+                        idx = await progress.add_tool(tool_name, args)
                         if tc_id:
                             tc_step_map[tc_id] = idx
-                        await progress.flush()
 
                 elif et == "tool_output":
                     tc_id = data.get("tool_call_id", "")
@@ -1535,8 +1606,7 @@ class TelegramBotService:
                     if gateway and progress:
                         step_idx = tc_step_map.pop(tc_id, -1)
                         if step_idx >= 0:
-                            progress.set_result(step_idx, tool_name, output, ok)
-                        await progress.flush()
+                            await progress.set_result(step_idx, tool_name, output, ok)
 
                 elif et == "tool_state_change":
                     state = data.get("state", "")
@@ -1544,8 +1614,7 @@ class TelegramBotService:
                     if state == "cancelled" and gateway and progress:
                         step_idx = tc_step_map.pop(tc_id, -1)
                         if step_idx >= 0:
-                            progress.cancel_step(step_idx)
-                        await progress.flush()
+                            await progress.cancel_step(step_idx)
 
                 elif et == "compacted" and gateway:
                     old_t = data.get("old_tokens", 0)
@@ -1603,28 +1672,23 @@ class TelegramBotService:
         steps = progress.step_count if progress else 0
         logger.info("TG %d: final delivery event=%s elapsed=%s steps=%d", chat_id, terminal_event, elapsed, steps)
 
-        # Remove stream placeholder (gateway)
-        if gateway and stream and stream._msg_id:
-            await self._delete_message(chat_id, stream._msg_id)
-
         # Update ticker → done
         if gateway and ticker_msg_id:
             await self._edit_message(chat_id, ticker_msg_id, f"✅ Done · {elapsed} · {steps} steps")
 
-        # Send tool results (gateway)
-        if gateway and progress:
-            await progress.send_results()
-
-        # Send final assistant response
+        # Send final assistant response (only if stream didn't already deliver it)
         if terminal_event == "turn_complete":
-            if stream and stream.text:
-                final_text = stream.text
-            else:
+            # StreamConsumer already delivered paragraphs progressively.
+            # Only send footer with stats.
+            if gateway and stream and stream.text:
+                await self._send_message(chat_id, f"_{elapsed}, {steps} steps_", parse_mode="Markdown")
+            elif not (gateway and stream and stream.text):
+                # Fallback: no stream was used, get text from session
                 messages = [msg.model_dump() for msg in agent_session.session.context_manager.items]
                 final_text = _message_text(messages)
-            if final_text:
-                footer = f"\n\n_{elapsed}, {steps} steps_" if gateway else ""
-                await self._send_message(chat_id, f"🤖 {final_text}{footer}")
+                if final_text:
+                    footer = f"\n\n_{elapsed}, {steps} steps_" if gateway else ""
+                    await self._send_message(chat_id, f"🤖 {final_text}{footer}")
         elif terminal_event == "timeout":
             await self._send_message(chat_id, f"⏳ Still running ({elapsed}). Open Web UI for live view.")
         elif terminal_event == "interrupted":
