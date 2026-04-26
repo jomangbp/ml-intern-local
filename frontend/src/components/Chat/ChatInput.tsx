@@ -6,6 +6,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
+import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
 import { useAgentStore } from '@/store/agentStore';
 import { FIRST_FREE_MODEL_PATH } from '@/utils/model';
 
@@ -86,6 +87,8 @@ interface ChatInputProps {
   sessionId?: string;
   onSend: (text: string) => void;
   onStop?: () => void;
+  onDeclineBlockedJobs?: () => Promise<boolean>;
+  onContinueBlockedJobsWithNamespace?: (namespace: string) => Promise<boolean>;
   isProcessing?: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -94,7 +97,7 @@ interface ChatInputProps {
 const isClaudeModel = (m: ModelOption) => m.modelPath.startsWith('anthropic/');
 const firstFreeModel = (options: ModelOption[]) => options.find(m => !isClaudeModel(m)) ?? options[0];
 
-export default function ChatInput({ sessionId, onSend, onStop, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
+export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJobs, onContinueBlockedJobsWithNamespace, isProcessing = false, disabled = false, placeholder = 'Ask anything...' }: ChatInputProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>(() => FALLBACK_API_MODELS.map(apiModelToOption));
@@ -108,6 +111,8 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
   // the hook layer can flip it without threading props through.
   const claudeQuotaExhausted = useAgentStore((s) => s.claudeQuotaExhausted);
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
+  const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
+  const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
   const lastSentRef = useRef<string>('');
 
   // Load server-provided model list so UI stays in sync with backend config.
@@ -243,6 +248,44 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
       }
     } catch { /* ignore */ }
   }, [sessionId, onSend, setClaudeQuotaExhausted]);
+
+  const handleClaudeUpgradeClick = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await apiFetch(`/api/pro-click/${sessionId}`, {
+        method: 'POST',
+        body: JSON.stringify({ source: 'claude_cap_dialog', target: 'pro_pricing' }),
+      });
+    } catch {
+      /* tracking is best-effort */
+    }
+  }, [sessionId]);
+
+  const handleJobsUpgradeClose = useCallback(() => {
+    setJobsUpgradeRequired(null);
+  }, [setJobsUpgradeRequired]);
+
+  const handleJobsUpgradeClick = useCallback(async () => {
+    if (!sessionId || !jobsUpgradeRequired) return;
+    try {
+      await apiFetch(`/api/pro-click/${sessionId}`, {
+        method: 'POST',
+        body: JSON.stringify({ source: 'hf_jobs_upgrade_dialog', target: 'pro_pricing' }),
+      });
+    } catch {
+      /* tracking is best-effort */
+    }
+  }, [sessionId, jobsUpgradeRequired]);
+
+  const handleDeclineBlockedJobs = useCallback(async () => {
+    if (!onDeclineBlockedJobs) return;
+    await onDeclineBlockedJobs();
+  }, [onDeclineBlockedJobs]);
+
+  const handleContinueBlockedJobsWithNamespace = useCallback(async (namespace: string) => {
+    if (!onContinueBlockedJobsWithNamespace) return;
+    await onContinueBlockedJobsWithNamespace(namespace);
+  }, [onContinueBlockedJobsWithNamespace]);
 
   // Hide the chip until the user has actually burned quota — an unused
   // Opus session shouldn't populate a counter.
@@ -482,6 +525,17 @@ export default function ChatInput({ sessionId, onSend, onStop, isProcessing = fa
           cap={quota?.claudeDailyCap ?? 1}
           onClose={handleCapDialogClose}
           onUseFreeModel={handleUseFreeModel}
+          onUpgrade={handleClaudeUpgradeClick}
+        />
+        <JobsUpgradeDialog
+          open={!!jobsUpgradeRequired}
+          mode={jobsUpgradeRequired?.mode || 'upgrade'}
+          message={jobsUpgradeRequired?.message || ''}
+          eligibleNamespaces={jobsUpgradeRequired?.eligibleNamespaces || []}
+          onClose={handleJobsUpgradeClose}
+          onUpgrade={handleJobsUpgradeClick}
+          onDecline={handleDeclineBlockedJobs}
+          onContinueWithNamespace={handleContinueBlockedJobsWithNamespace}
         />
       </Box>
     </Box>
