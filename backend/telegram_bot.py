@@ -306,69 +306,72 @@ class StreamConsumer:
                 await self._bot._send_message(self._chat_id, remaining[:3500])
 
 
-# ── Progress Consumer (per-tool messages) ─────────────────────────
+# ── Progress Consumer (single in-place tool message) ──────────────
 
 class ProgressConsumer:
-    """Sends each tool call as its own Telegram message and edits it on completion.
+    """Shows all tool activity in a single editable Telegram message.
 
-    Instead of accumulating all tool calls into a single message, this consumer
-    creates one message per tool call showing what's happening, then edits that
-    message with ✅/❌ + truncated output when the tool finishes.
-
-    This gives a real-time activity log like Hermes.
+    Sends ONE message: "🔧 Using tools..." and edits it in-place as tools
+    start and finish. Keeps the chat clean — no message spam.
     """
 
     def __init__(self, bot: TelegramBotService, chat_id: int) -> None:
         self._bot = bot
         self._chat_id = chat_id
-        self._tool_msgs: dict[int, int] = {}   # step_idx -> msg_id
-        self._results: dict[int, str] = {}      # step_idx -> result text
+        self._lines: list[str] = []
+        self._results: dict[int, str] = {}
+        self._msg_id: int | None = None
+        self._last_edit = 0.0
         self._step_count = 0
-        self._lock = asyncio.Lock()
 
     @property
     def step_count(self) -> int:
         return self._step_count
 
     async def add_tool(self, tool: str, args: dict) -> int:
-        """Send a tool call as a new Telegram message. Returns step index."""
+        """Add a tool call line. Returns step index."""
         idx = self._step_count
         self._step_count += 1
-        line = _format_tool_line(tool, args)
-        msg_id = await self._bot._send_message(self._chat_id, f"⏳ {line}")
-        self._tool_msgs[idx] = msg_id
+        self._lines.append(_format_tool_line(tool, args))
+        await self._flush()
         return idx
 
     async def set_result(self, step_idx: int, tool: str, output: str, success: bool) -> None:
-        """Edit the tool message with result."""
-        icon = _tool_icon(tool)
+        """Mark a tool as done with ✅/❌."""
         status = "✅" if success else "❌"
-        result_line = _format_tool_result(tool, output, success)
-        msg_id = self._tool_msgs.get(step_idx)
-        if msg_id:
-            await self._bot._edit_message(self._chat_id, msg_id, result_line)
-        else:
-            await self._bot._send_message(self._chat_id, result_line)
-        self._results[step_idx] = result_line
+        if step_idx < len(self._lines):
+            self._lines[step_idx] = f"{self._lines[step_idx]} {status}"
+        self._results[step_idx] = _format_tool_result(tool, output, success)
+        await self._flush()
 
     async def cancel_step(self, step_idx: int) -> None:
-        msg_id = self._tool_msgs.get(step_idx)
-        if msg_id:
-            # Get the original line text — just edit to append ⏹️
-            await self._bot._edit_message(self._chat_id, msg_id, "⏹️ cancelled")
+        if step_idx < len(self._lines):
+            self._lines[step_idx] = f"{self._lines[step_idx]} ⏹️"
+        await self._flush()
+
+    async def _flush(self) -> None:
+        """Send or edit the single progress message."""
+        text = "🔧 Using tools...\n" + "\n".join(self._lines)
+        text = text[:3900]
+        now = time.monotonic()
+        if self._msg_id:
+            if now - self._last_edit >= _PROGRESS_EDIT_INTERVAL:
+                await self._bot._edit_message(self._chat_id, self._msg_id, text)
+                self._last_edit = now
+        else:
+            self._msg_id = await self._bot._send_message(self._chat_id, text)
+            self._last_edit = time.monotonic()
 
     async def flush(self) -> None:
-        """No-op — messages are sent immediately in add_tool/set_result."""
-        pass
+        await self._flush()
 
     async def send_results(self) -> None:
-        """No-op — results are already sent inline via set_result."""
+        """No-op — results shown inline via ✅/❌ in the single message."""
         pass
 
     @property
     def msg_id(self) -> int | None:
-        """Return first tool message id for compatibility."""
-        return next(iter(self._tool_msgs.values()), None)
+        return self._msg_id
 
 
 # ── Telegram Bot Service ──────────────────────────────────────────
