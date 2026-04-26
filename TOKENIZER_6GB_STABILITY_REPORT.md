@@ -80,10 +80,10 @@ Tokenization was crashing hard (and sometimes took down the whole workflow). In 
 ---
 
 ## Recommended command for your machine (6GB budget)
-Run from: `/home/jgbla/repos/ml-intern/backend/hybrid-slm`
+Run from: `backend/hybrid-slm`
 
 ```bash
-/home/jgbla/repos/ml-intern/.venv/bin/python scripts/download_and_tokenize.py \
+.venv/bin/python scripts/download_and_tokenize.py \
   --profile 6gb \
   --output-dir data \
   --resume
@@ -91,7 +91,7 @@ Run from: `/home/jgbla/repos/ml-intern/backend/hybrid-slm`
 
 If you want smaller first run (safer sanity pass):
 ```bash
-/home/jgbla/repos/ml-intern/.venv/bin/python scripts/download_and_tokenize.py \
+.venv/bin/python scripts/download_and_tokenize.py \
   --profile 6gb \
   --train-doc-limit 50000 \
   --val-doc-limit 5000 \
@@ -113,8 +113,8 @@ If you want smaller first run (safer sanity pass):
 A background tokenize run was started with the 6GB profile:
 
 ```bash
-cd /home/jgbla/repos/ml-intern/backend/hybrid-slm
-nohup /home/jgbla/repos/ml-intern/.venv/bin/python scripts/download_and_tokenize.py \
+cd backend/hybrid-slm
+nohup .venv/bin/python scripts/download_and_tokenize.py \
   --profile 6gb \
   --output-dir data \
   --resume > /tmp/tokenize.log 2>&1 &
