@@ -1115,71 +1115,14 @@ class TelegramBotService:
     # ── Cron Factory ──────────────────────────────────────────────
 
     def _make_cron_submit_fn(self, chat_id_str: str, session_id: str, config: dict) -> SubmitPrompt:
-        """Create a submit function for a cron job. Used by prompt_cron_manager.restore()."""
+        """Create a submit function for a restored cron job."""
         chat_id = int(chat_id_str)
-        prompt = config.get("prompt", "")
-        interval = config.get("interval_minutes", 10)
-        # Return the same factory used by _create_telegram_cron but as a simple submit fn
         bot = self
 
         async def _submit(sid: str, text: str) -> bool:
             try:
                 logger.info("TG cron %d (restored): firing prompt=%s", chat_id, text[:60])
-                await bot._send_message(chat_id, f"⏰ *Cron:* {text[:80]}" + ("..." if len(text) > 80 else ""), parse_mode="Markdown")
-
-                # Ensure session
-                agent_session = session_manager.sessions.get(sid)
-                if not agent_session or not agent_session.is_active:
-                    sid = await bot._ensure_session(chat_id)
-                    agent_session = session_manager.sessions[sid]
-
-                # Wait for broadcaster
-                for _ in range(50):
-                    if agent_session.broadcaster is not None:
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    await bot._send_message(chat_id, "❌ Cron: session not ready")
-                    return False
-
-                # Subscribe and submit
-                broadcaster = agent_session.broadcaster
-                sub_id, event_queue = broadcaster.subscribe()
-                ok = await session_manager.submit_user_input(sid, text)
-                if not ok:
-                    broadcaster.unsubscribe(sub_id)
-                    await bot._send_message(chat_id, "❌ Cron: submit failed")
-                    return False
-
-                # Wait for result
-                final_text = None
-                timeout = bot.turn_timeout
-                try:
-                    while True:
-                        try:
-                            event = await asyncio.wait_for(event_queue.get(), timeout=timeout)
-                        except asyncio.TimeoutError:
-                            await bot._send_message(chat_id, f"⏳ Cron timeout ({timeout}s)")
-                            break
-                        et = event.get("event_type")
-                        data = event.get("data", {})
-                        if et == "assistant_message":
-                            final_text = data.get("content", "")
-                        elif et == "turn_complete":
-                            if not final_text:
-                                messages = [msg.model_dump() for msg in agent_session.session.context_manager.items]
-                                final_text = _message_text(messages)
-                            break
-                        elif et in {"error", "interrupted", "shutdown"}:
-                            err = data.get("error", "") if et == "error" else "interrupted"
-                            await bot._send_message(chat_id, f"❌ Cron: {err}")
-                            break
-                finally:
-                    broadcaster.unsubscribe(sub_id)
-
-                if final_text:
-                    await bot._send_message(chat_id, f"🤖 {final_text[:3900]}")
-                return True
+                return await bot._cron_run_turn(chat_id, sid, text)
             except Exception as e:
                 logger.exception("TG cron %d: failed", chat_id)
                 try:
@@ -1190,83 +1133,90 @@ class TelegramBotService:
 
         return _submit
 
+    async def _cron_run_turn(self, chat_id: int, session_id: str, text: str) -> bool:
+        """Run a single cron turn: ensure session, submit, wait for response, send to TG."""
+        await self._send_message(chat_id, f"⏰ *Cron:* {text[:80]}" + ("..." if len(text) > 80 else ""), parse_mode="Markdown")
+
+        # Always get a fresh, usable session for this chat
+        session_id = await self._ensure_session(chat_id)
+        agent_session = session_manager.sessions.get(session_id)
+
+        if not agent_session or not agent_session.is_active:
+            await self._send_message(chat_id, "❌ Cron: cannot create session")
+            return False
+
+        # Wait for broadcaster
+        for _ in range(50):
+            if agent_session.broadcaster is not None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            await self._send_message(chat_id, "❌ Cron: session not ready")
+            return False
+
+        # If session is busy, skip this run (don't queue up)
+        if agent_session.is_processing:
+            logger.info("TG cron %d: session busy, skipping", chat_id)
+            await self._send_message(chat_id, "⏭ Cron skipped (session busy)")
+            return True  # Return True so cron doesn't die
+
+        broadcaster = agent_session.broadcaster
+        sub_id, event_queue = broadcaster.subscribe()
+        ok = await session_manager.submit_user_input(session_id, text)
+        if not ok:
+            broadcaster.unsubscribe(sub_id)
+            await self._send_message(chat_id, "❌ Cron: submit failed")
+            return False
+
+        # Wait for turn result
+        final_text = None
+        timeout = self.turn_timeout
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    await self._send_message(chat_id, f"⏳ Cron timeout ({timeout}s)")
+                    break
+
+                et = event.get("event_type")
+                data = event.get("data", {})
+
+                if et == "assistant_chunk":
+                    # Streaming chunks — ignore, we'll get the full text at the end
+                    pass
+                elif et == "assistant_message":
+                    final_text = data.get("content", "")
+                elif et == "tool_call":
+                    # Tool activity — just log
+                    logger.debug("TG cron %d: tool_call %s", chat_id, data.get("tool", "?"))
+                elif et == "turn_complete":
+                    if not final_text:
+                        messages = [msg.model_dump() for msg in agent_session.session.context_manager.items]
+                        final_text = _message_text(messages)
+                    break
+                elif et in {"error", "interrupted", "shutdown"}:
+                    err = data.get("error", "") if et == "error" else "interrupted"
+                    await self._send_message(chat_id, f"❌ Cron: {err}")
+                    break
+        finally:
+            broadcaster.unsubscribe(sub_id)
+
+        if final_text:
+            logger.info("TG cron %d: sending response (%d chars)", chat_id, len(final_text))
+            await self._send_message(chat_id, f"🤖 {final_text[:3900]}")
+        return True
+
     async def _create_telegram_cron(
         self, chat_id: int, session_id: str, interval_minutes: float, prompt: str,
     ) -> str:
         """Create a prompt cron that reports results back to this Telegram chat."""
-        bot = self  # capture for closure
+        bot = self
 
         async def _submit_and_report(sid: str, text: str) -> bool:
-            """Submit prompt to agent, wait for response, send to Telegram."""
             try:
                 logger.info("TG cron %d: firing prompt=%s", chat_id, text[:60])
-                await bot._send_message(chat_id, f"⏰ *Cron:* {text[:80]}" + ("..." if len(text) > 80 else ""), parse_mode="Markdown")
-
-                # Ensure session is alive
-                agent_session = session_manager.sessions.get(sid)
-                if not agent_session or not agent_session.is_active:
-                    logger.info("TG cron %d: session dead, recreating", chat_id)
-                    sid = await bot._new_session(chat_id)
-                    agent_session = session_manager.sessions[sid]
-                    logger.info("TG cron %d: new session %s", chat_id, sid[:8])
-
-                # Wait for broadcaster
-                for _ in range(50):
-                    if agent_session.broadcaster is not None:
-                        break
-                    await asyncio.sleep(0.1)
-                else:
-                    logger.error("TG cron %d: broadcaster never ready", chat_id)
-                    await bot._send_message(chat_id, "❌ Cron: session not ready")
-                    return False
-
-                # Subscribe to events
-                broadcaster = agent_session.broadcaster
-                sub_id, event_queue = broadcaster.subscribe()
-
-                # Submit prompt (outside chat lock — the queue handles serialization)
-                ok = await session_manager.submit_user_input(sid, text)
-                if not ok:
-                    broadcaster.unsubscribe(sub_id)
-                    await bot._send_message(chat_id, "❌ Cron: failed to submit")
-                    return False
-
-                # Wait for turn_complete with timeout
-                final_text = None
-                timeout = bot.turn_timeout
-                try:
-                    while True:
-                        try:
-                            event = await asyncio.wait_for(event_queue.get(), timeout=timeout)
-                        except asyncio.TimeoutError:
-                            logger.warning("TG cron %d: turn timeout after %ds", chat_id, timeout)
-                            await bot._send_message(chat_id, f"⏳ Cron timeout ({timeout}s)")
-                            break
-
-                        et = event.get("event_type")
-                        data = event.get("data", {})
-
-                        if et == "assistant_message":
-                            final_text = data.get("content", "")
-                        elif et == "turn_complete":
-                            if not final_text:
-                                messages = [msg.model_dump() for msg in agent_session.session.context_manager.items]
-                                final_text = _message_text(messages)
-                            break
-                        elif et in {"error", "interrupted", "shutdown"}:
-                            err = data.get("error", "") if et == "error" else "interrupted"
-                            await bot._send_message(chat_id, f"❌ Cron: {err}")
-                            final_text = None
-                            break
-                finally:
-                    broadcaster.unsubscribe(sub_id)
-
-                # Send response
-                if final_text:
-                    logger.info("TG cron %d: sending response (%d chars)", chat_id, len(final_text))
-                    await bot._send_message(chat_id, f"🤖 {final_text[:3900]}")
-                return True
-
+                return await bot._cron_run_turn(chat_id, sid, text)
             except Exception as e:
                 logger.exception("TG cron %d: execution failed", chat_id)
                 try:
