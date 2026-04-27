@@ -660,6 +660,58 @@ def _parse_cron_command(text: str) -> tuple[float, str] | None:
     return float(match.group(1)), match.group(2).strip()
 
 
+async def _cron_submit_and_wait(session_id: str, text: str) -> bool:
+    """Submit a cron prompt to the agent session and wait for completion.
+
+    Unlike raw session_manager.submit_user_input (which just enqueues),
+    this subscribes to the broadcaster and waits for turn_complete so
+    the cron runner knows the agent actually finished.
+    """
+    agent_session = session_manager.sessions.get(session_id)
+    if not agent_session or not agent_session.is_active:
+        logger.warning("Cron submit: session %s not active", session_id[:8])
+        return False
+
+    # Wait for broadcaster
+    for _ in range(50):
+        if agent_session.broadcaster is not None:
+            break
+        await asyncio.sleep(0.1)
+    else:
+        logger.error("Cron submit: broadcaster not ready for %s", session_id[:8])
+        return False
+
+    # Skip if session is busy
+    if agent_session.is_processing:
+        logger.info("Cron submit: session %s busy, skipping", session_id[:8])
+        return True  # Don't kill the cron
+
+    broadcaster = agent_session.broadcaster
+    sub_id, event_queue = broadcaster.subscribe()
+
+    ok = await session_manager.submit_user_input(session_id, text)
+    if not ok:
+        broadcaster.unsubscribe(sub_id)
+        return False
+
+    # Wait for turn to complete
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(event_queue.get(), timeout=3600)
+            except asyncio.TimeoutError:
+                logger.warning("Cron submit: timeout waiting for turn_complete")
+                return False
+
+            et = event.get("event_type")
+            if et == "turn_complete":
+                return True
+            elif et in {"error", "interrupted", "shutdown"}:
+                return False
+    finally:
+        broadcaster.unsubscribe(sub_id)
+
+
 async def _create_prompt_cron_from_payload(payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     session_id = str(payload.get("session_id") or "").strip()
     if session_id:
@@ -671,7 +723,7 @@ async def _create_prompt_cron_from_payload(payload: dict[str, Any], user: dict[s
         user_id=user["user_id"],
         interval_minutes=interval_minutes,
         prompt=prompt,
-        submit_prompt=session_manager.submit_user_input,
+        submit_prompt=_cron_submit_and_wait,
         task_name=payload.get("task_name") or None,
         repeat=bool(payload.get("repeat", True)),
         max_runs=int(payload.get("max_runs") or 0),
