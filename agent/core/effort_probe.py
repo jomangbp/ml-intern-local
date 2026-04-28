@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from litellm import acompletion
 
+from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 from agent.core.llm_params import UnsupportedEffortError, _resolve_llm_params
 
 logger = logging.getLogger(__name__)
@@ -174,15 +175,28 @@ async def probe_effort(
 
         attempts += 1
         try:
-            await asyncio.wait_for(
-                acompletion(
-                    messages=[{"role": "user", "content": "ping"}],
-                    max_tokens=_PROBE_MAX_TOKENS,
-                    stream=False,
-                    **params,
-                ),
-                timeout=_PROBE_TIMEOUT,
-            )
+            if is_codex_responses_params(params):
+                await asyncio.wait_for(
+                    codex_responses_completion(
+                        messages=[{"role": "user", "content": "ping"}],
+                        tools=None,
+                        params=params,
+                        stream=False,
+                        max_output_tokens=_PROBE_MAX_TOKENS,
+                        timeout=_PROBE_TIMEOUT,
+                    ),
+                    timeout=_PROBE_TIMEOUT,
+                )
+            else:
+                await asyncio.wait_for(
+                    acompletion(
+                        messages=[{"role": "user", "content": "ping"}],
+                        max_tokens=_PROBE_MAX_TOKENS,
+                        stream=False,
+                        **params,
+                    ),
+                    timeout=_PROBE_TIMEOUT,
+                )
         except Exception as e:
             last_error = e
             if _is_thinking_unsupported(e):

@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from jinja2 import Template
 from litellm import Message, acompletion
+from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 
 from agent.core.prompt_caching import with_prompt_caching
 
@@ -122,6 +123,16 @@ async def summarize_messages(
         reasoning_effort="high",
         provider_keys=provider_keys,
     )
+    if is_codex_responses_params(llm_params):
+        result = await codex_responses_completion(
+            messages=prompt_messages,
+            tools=tool_specs,
+            params=llm_params,
+            stream=False,
+            max_output_tokens=max_tokens,
+        )
+        return result.content or "", result.usage.get("output_tokens", 0) if result.usage else 0
+
     prompt_messages, tool_specs = with_prompt_caching(
         prompt_messages, tool_specs, llm_params.get("model")
     )

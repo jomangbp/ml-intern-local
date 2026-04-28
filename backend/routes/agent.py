@@ -33,6 +33,7 @@ from session_manager import MAX_SESSIONS, AgentSession, SessionCapacityError, se
 
 import user_quotas
 
+from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 from agent.core.hf_access import get_jobs_access
 from agent.core.llm_params import _resolve_llm_params
 from prompt_cron import prompt_cron_manager
@@ -277,24 +278,18 @@ async def llm_health_check(user: dict = Depends(get_current_user)) -> LLMHealthR
             provider_keys=provider_keys,
         )
 
-        api_base = str(llm_params.get("api_base") or "")
-        is_codex_backend = "chatgpt.com/backend-api/codex" in api_base
-
-        if is_codex_backend:
-            # Codex backend requires stream=true and has stricter payload rules
-            # than public OpenAI API. Run a tiny streamed probe and stop as soon
-            # as the first chunk arrives.
-            stream = await acompletion(
+        if is_codex_responses_params(llm_params):
+            await codex_responses_completion(
                 messages=[
                     {"role": "system", "content": "You are concise."},
                     {"role": "user", "content": "hi"},
                 ],
-                stream=True,
+                tools=None,
+                params=llm_params,
+                stream=False,
+                max_output_tokens=4,
                 timeout=12,
-                **llm_params,
             )
-            async for _chunk in stream:
-                break
         else:
             await acompletion(
                 messages=[{"role": "user", "content": "hi"}],

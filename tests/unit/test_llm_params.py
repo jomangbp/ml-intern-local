@@ -1,4 +1,5 @@
 from agent.core.llm_params import UnsupportedEffortError, _resolve_llm_params
+from agent.core.codex_responses import is_codex_responses_params
 
 
 def test_openai_xhigh_effort_is_forwarded():
@@ -8,8 +9,11 @@ def test_openai_xhigh_effort_is_forwarded():
         strict=True,
     )
 
-    assert params["model"] == "openai/gpt-5.5"
+    assert params["model"] in {"openai/gpt-5.5", "gpt-5.5"}
     assert params["reasoning_effort"] == "xhigh"
+    if is_codex_responses_params(params):
+        assert params["api_base"].endswith("/backend-api/codex/responses")
+        assert "account_id" in params
 
 
 def test_openai_max_effort_is_still_rejected():

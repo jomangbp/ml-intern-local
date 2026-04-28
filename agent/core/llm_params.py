@@ -336,26 +336,18 @@ def _resolve_llm_params(
                 codex_account_id = _extract_codex_account_id(codex_key)
                 if codex_account_id:
                     params = {
-                        "model": f"openai/{codex_model_id}",
+                        # The Codex subscription backend speaks Responses API,
+                        # not ChatCompletions. LiteLLM appends /chat/completions
+                        # and hits a Cloudflare challenge, so ml-intern handles
+                        # this provider with agent.core.codex_responses.
+                        "_codex_responses": True,
+                        "model": codex_model_id,
                         "api_key": codex_key,
+                        "account_id": codex_account_id,
                         "api_base": os.environ.get(
-                            "OPENAI_CODEX_API_BASE",
-                            "https://chatgpt.com/backend-api/codex",
+                            "OPENAI_CODEX_RESPONSES_API_BASE",
+                            "https://chatgpt.com/backend-api/codex/responses",
                         ),
-                        "extra_headers": {
-                            "chatgpt-account-id": codex_account_id,
-                            "originator": "ml-intern",
-                            "OpenAI-Beta": "responses=experimental",
-                        },
-                        # Codex backend rejects several optional OpenAI params;
-                        # pruning them avoids hard failures in chat turns.
-                        "drop_params": True,
-                        # Codex backend requires store=false and an instructions
-                        # field even when messages are provided.
-                        "extra_body": {
-                            "store": False,
-                            "instructions": "You are a helpful assistant.",
-                        },
                     }
                     if reasoning_effort:
                         if reasoning_effort not in _OPENAI_EFFORTS:

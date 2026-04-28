@@ -15,6 +15,7 @@ from litellm.exceptions import ContextWindowExceededError
 from agent.config import Config
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
+from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 from agent.core.llm_params import _resolve_llm_params
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
@@ -401,6 +402,35 @@ class LLMResult:
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
+    if is_codex_responses_params(llm_params):
+        t_start = time.monotonic()
+        result = await codex_responses_completion(
+            messages=messages,
+            tools=tools,
+            params=llm_params,
+            stream=True,
+            on_delta=lambda delta: session.send_event(
+                Event(event_type="assistant_chunk", data={"content": delta})
+            ),
+            timeout=600,
+        )
+        usage = await telemetry.record_llm_call(
+            session,
+            model=llm_params.get("model", session.config.model_name),
+            response=None,
+            latency_ms=int((time.monotonic() - t_start) * 1000),
+            finish_reason=result.finish_reason,
+        )
+        if not usage:
+            usage = result.usage
+        return LLMResult(
+            content=result.content,
+            tool_calls_acc=result.tool_calls_acc,
+            token_count=result.token_count,
+            finish_reason=result.finish_reason,
+            usage=usage,
+        )
+
     response = None
     _healed_effort = False  # one-shot safety net per call
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
@@ -511,6 +541,36 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
 
 async def _call_llm_non_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM without streaming, emit assistant_message at the end."""
+    if is_codex_responses_params(llm_params):
+        t_start = time.monotonic()
+        result = await codex_responses_completion(
+            messages=messages,
+            tools=tools,
+            params=llm_params,
+            stream=False,
+            timeout=600,
+        )
+        if result.content:
+            await session.send_event(
+                Event(event_type="assistant_message", data={"content": result.content})
+            )
+        usage = await telemetry.record_llm_call(
+            session,
+            model=llm_params.get("model", session.config.model_name),
+            response=None,
+            latency_ms=int((time.monotonic() - t_start) * 1000),
+            finish_reason=result.finish_reason,
+        )
+        if not usage:
+            usage = result.usage
+        return LLMResult(
+            content=result.content,
+            tool_calls_acc=result.tool_calls_acc,
+            token_count=result.token_count,
+            finish_reason=result.finish_reason,
+            usage=usage,
+        )
+
     response = None
     _healed_effort = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
