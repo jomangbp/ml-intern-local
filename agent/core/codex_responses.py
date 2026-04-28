@@ -71,32 +71,49 @@ def _messages_to_codex(messages: list[Any]) -> tuple[str, list[dict[str, Any]]]:
             continue
 
         if role == "tool":
-            name = _get_field(msg, "name", "tool") or "tool"
             tool_call_id = _get_field(msg, "tool_call_id", "") or ""
-            content = f"Tool result ({name}, call_id={tool_call_id}):\n{content}"
-            role = "user"
-        elif role == "assistant":
-            tool_calls = _get_field(msg, "tool_calls", None)
-            if tool_calls:
-                summaries: list[str] = []
-                for tc in tool_calls:
-                    fn = _get_field(tc, "function", {})
-                    name = _get_field(fn, "name", "")
-                    args = _get_field(fn, "arguments", "")
-                    call_id = _get_field(tc, "id", "")
-                    summaries.append(f"Requested tool {name} call_id={call_id} args={args}")
-                extra = "\n".join(summaries)
-                content = f"{content}\n{extra}".strip()
+            if tool_call_id:
+                inputs.append({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": content,
+                })
+            elif content:
+                inputs.append({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"Tool result:\n{content}"}],
+                })
+            continue
 
-        if role not in {"user", "assistant", "developer"}:
+        if role == "assistant":
+            if content:
+                inputs.append({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": content}],
+                })
+            tool_calls = _get_field(msg, "tool_calls", None)
+            for tc in tool_calls or []:
+                fn = _get_field(tc, "function", {})
+                name = _get_field(fn, "name", "")
+                args = _get_field(fn, "arguments", "") or "{}"
+                call_id = _get_field(tc, "id", "") or f"call_{len(inputs)}"
+                if name:
+                    inputs.append({
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": args,
+                    })
+            continue
+
+        if role not in {"user", "developer"}:
             role = "user"
         if not content:
             continue
         wire_role = "user" if role == "developer" else role
-        text_type = "output_text" if wire_role == "assistant" else "input_text"
         inputs.append({
             "role": wire_role,
-            "content": [{"type": text_type, "text": content}],
+            "content": [{"type": "input_text", "text": content}],
         })
 
     if not inputs:
