@@ -92,9 +92,11 @@ def _messages_to_codex(messages: list[Any]) -> tuple[str, list[dict[str, Any]]]:
             role = "user"
         if not content:
             continue
+        wire_role = "user" if role == "developer" else role
+        text_type = "output_text" if wire_role == "assistant" else "input_text"
         inputs.append({
-            "role": "user" if role == "developer" else role,
-            "content": [{"type": "input_text", "text": content}],
+            "role": wire_role,
+            "content": [{"type": text_type, "text": content}],
         })
 
     if not inputs:
