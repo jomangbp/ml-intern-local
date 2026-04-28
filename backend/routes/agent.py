@@ -901,7 +901,7 @@ async def chat_sse(
                 user_id=user["user_id"],
                 interval_minutes=interval_minutes,
                 prompt=prompt,
-                submit_prompt=session_manager.submit_user_input,
+                submit_prompt=_cron_submit_and_wait,
                 task_name=f"/cron {interval_minutes:g} min",
                 repeat=True,
                 max_runs=0,
