@@ -19,6 +19,7 @@ import {
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import RestoreIcon from '@mui/icons-material/Restore';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { apiFetch } from '@/utils/api';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
@@ -52,6 +53,7 @@ export default function SavedSessionsDialog({ open, onClose, currentSessionId }:
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadSaved = useCallback(async () => {
@@ -87,6 +89,26 @@ export default function SavedSessionsDialog({ open, onClose, currentSessionId }:
       setSaving(false);
     }
   }, [currentSessionId, saving, loadSaved]);
+
+  const handleDelete = useCallback(async (saved: SavedSessionInfo) => {
+    const ok = window.confirm(
+      `Delete saved session permanently?\n\n${saved.title || saved.saved_id}\n\nThis removes local saved snapshots and cannot be undone.`,
+    );
+    if (!ok) return;
+    setDeletingId(saved.saved_id);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/saved-sessions/${encodeURIComponent(saved.saved_id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
+      setSessions((prev) => prev.filter((item) => item.saved_id !== saved.saved_id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete saved session.');
+    } finally {
+      setDeletingId(null);
+    }
+  }, []);
 
   const handleResume = useCallback(async (saved: SavedSessionInfo) => {
     setRestoringId(saved.saved_id);
@@ -152,18 +174,29 @@ export default function SavedSessionsDialog({ open, onClose, currentSessionId }:
                   key={saved.saved_id}
                   divider
                   secondaryAction={
-                    <Button
-                      size="small"
-                      variant="contained"
-                      startIcon={restoringId === saved.saved_id ? <CircularProgress size={14} color="inherit" /> : <RestoreIcon />}
-                      disabled={!!restoringId}
-                      onClick={() => void handleResume(saved)}
-                      sx={{ textTransform: 'none' }}
-                    >
-                      Resume
-                    </Button>
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        disabled={!!restoringId || !!deletingId}
+                        onClick={() => void handleDelete(saved)}
+                        aria-label={`Delete saved session ${saved.title || saved.saved_id}`}
+                      >
+                        {deletingId === saved.saved_id ? <CircularProgress size={18} color="inherit" /> : <DeleteOutlineIcon fontSize="small" />}
+                      </IconButton>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        startIcon={restoringId === saved.saved_id ? <CircularProgress size={14} color="inherit" /> : <RestoreIcon />}
+                        disabled={!!restoringId || !!deletingId}
+                        onClick={() => void handleResume(saved)}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        Resume
+                      </Button>
+                    </Stack>
                   }
-                  sx={{ pl: 0, pr: 12 }}
+                  sx={{ pl: 0, pr: 18 }}
                 >
                   <ListItemText
                     primary={saved.title || saved.saved_id}

@@ -653,6 +653,45 @@ class SessionManager:
         items.sort(key=lambda item: item.get("last_save_time") or "", reverse=True)
         return items[: max(1, min(limit, 200))]
 
+    def delete_saved_session(self, saved_id: str, user_id: str | None = None) -> dict[str, Any]:
+        """Permanently delete a saved session snapshot and its sibling snapshots.
+
+        Saved-session listings collapse multiple autosave files for the same
+        session_id into one entry. Deleting that entry should therefore remove
+        every local snapshot for that original session, not just the latest file.
+        """
+        path, data = self._load_saved_session_file(saved_id)
+        owner = data.get("user_id")
+        if user_id not in (None, "dev") and owner not in (None, user_id, "dev"):
+            raise PermissionError("Saved session belongs to another user")
+
+        session_id = str(data.get("session_id") or "").strip()
+        candidates: set[Path] = {path}
+        if session_id:
+            for directory in SAVED_SESSION_DIRS:
+                if directory.exists():
+                    candidates.update(directory.glob(f"session_{session_id}_*.json"))
+                    candidates.update(directory.glob(f"session_{session_id}.json"))
+
+        deleted: list[str] = []
+        for candidate in sorted(candidates):
+            try:
+                # Re-check ownership per file before deleting sibling snapshots.
+                try:
+                    cdata = json.loads(candidate.read_text(encoding="utf-8"))
+                    cowner = cdata.get("user_id")
+                    if user_id not in (None, "dev") and cowner not in (None, user_id, "dev"):
+                        continue
+                except Exception:
+                    if candidate != path:
+                        continue
+                candidate.unlink(missing_ok=True)
+                deleted.append(str(candidate))
+            except Exception as e:
+                logger.warning("Failed to delete saved session file %s: %s", candidate, e)
+
+        return {"saved_id": saved_id, "session_id": session_id or None, "deleted_count": len(deleted), "deleted_paths": deleted}
+
     async def save_current_session(self, session_id: str, title: str | None = None) -> dict[str, Any]:
         """Persist an active session immediately and return saved-session metadata."""
         agent_session = self.sessions.get(session_id)

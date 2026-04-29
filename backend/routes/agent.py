@@ -596,6 +596,26 @@ async def save_session_snapshot(
     return {"ok": True, "saved_session": saved}
 
 
+@router.delete("/saved-sessions/{saved_id}")
+async def delete_saved_session(
+    saved_id: str,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Permanently delete a saved local session snapshot."""
+    try:
+        result = session_manager.delete_saved_session(saved_id, user_id=user["user_id"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Saved session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied to saved session")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("delete_saved_session failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, **result}
+
+
 @router.post("/saved-sessions/{saved_id}/resume", response_model=SessionResponse)
 async def resume_saved_session(
     saved_id: str,
