@@ -655,7 +655,7 @@ def _parse_cron_command(text: str) -> tuple[float, str] | None:
     return float(match.group(1)), match.group(2).strip()
 
 
-async def _cron_submit_and_wait(session_id: str, text: str) -> bool:
+async def _cron_submit_and_wait(session_id: str, text: str) -> dict[str, Any]:
     """Submit a cron prompt to the agent session and wait for completion.
 
     Unlike raw session_manager.submit_user_input (which just enqueues),
@@ -665,7 +665,7 @@ async def _cron_submit_and_wait(session_id: str, text: str) -> bool:
     agent_session = session_manager.sessions.get(session_id)
     if not agent_session or not agent_session.is_active:
         logger.warning("Cron submit: session %s not active", session_id[:8])
-        return False
+        return {"ok": False, "error": "session not active"}
 
     # Wait for broadcaster
     for _ in range(50):
@@ -674,12 +674,12 @@ async def _cron_submit_and_wait(session_id: str, text: str) -> bool:
         await asyncio.sleep(0.1)
     else:
         logger.error("Cron submit: broadcaster not ready for %s", session_id[:8])
-        return False
+        return {"ok": False, "error": "broadcaster not ready"}
 
     # Skip if session is busy
     if agent_session.is_processing:
         logger.info("Cron submit: session %s busy, skipping", session_id[:8])
-        return True  # Don't kill the cron
+        return {"ok": True, "error": None}  # Don't kill the cron
 
     broadcaster = agent_session.broadcaster
     sub_id, event_queue = broadcaster.subscribe()
@@ -687,7 +687,7 @@ async def _cron_submit_and_wait(session_id: str, text: str) -> bool:
     ok = await session_manager.submit_user_input(session_id, text)
     if not ok:
         broadcaster.unsubscribe(sub_id)
-        return False
+        return {"ok": False, "error": "submit_user_input returned False"}
 
     # Wait for turn to complete
     try:
@@ -696,13 +696,16 @@ async def _cron_submit_and_wait(session_id: str, text: str) -> bool:
                 event = await asyncio.wait_for(event_queue.get(), timeout=3600)
             except asyncio.TimeoutError:
                 logger.warning("Cron submit: timeout waiting for turn_complete")
-                return False
+                return {"ok": False, "error": "timeout waiting for turn_complete"}
 
             et = event.get("event_type")
             if et == "turn_complete":
-                return True
+                return {"ok": True, "error": None}
             elif et in {"error", "interrupted", "shutdown"}:
-                return False
+                if et == "error":
+                    err = (event.get("data") or {}).get("error") or "agent error"
+                    return {"ok": False, "error": str(err)[:500]}
+                return {"ok": False, "error": et}
     finally:
         broadcaster.unsubscribe(sub_id)
 

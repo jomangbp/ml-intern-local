@@ -16,7 +16,8 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-SubmitPrompt = Callable[[str, str], Awaitable[bool]]
+SubmitResult = bool | tuple[bool, str | None] | dict[str, Any]
+SubmitPrompt = Callable[[str, str], Awaitable[SubmitResult]]
 
 CRON_STATE_DIR = Path(os.environ.get(
     "ML_INTERN_CRON_DIR",
@@ -26,6 +27,21 @@ CRON_STATE_DIR = Path(os.environ.get(
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_submit_result(result: SubmitResult) -> tuple[bool, str | None]:
+    """Normalize submit callback return into (ok, error)."""
+    if isinstance(result, bool):
+        return result, None
+    if isinstance(result, tuple) and len(result) >= 1:
+        ok = bool(result[0])
+        err = str(result[1]) if len(result) > 1 and result[1] else None
+        return ok, err
+    if isinstance(result, dict):
+        ok = bool(result.get("ok"))
+        err = result.get("error")
+        return ok, str(err) if err else None
+    return bool(result), None
 
 
 def _persist_cron(task_id: str, config: dict, status: dict) -> None:
@@ -115,10 +131,17 @@ class PromptCronManager:
                 continue
 
             try:
+                # Backfill defaults for older persisted cron records.
+                interval_seconds = int(config.get("interval_seconds") or max(60, int(float(config.get("interval_minutes") or 1) * 60)))
+                config.setdefault("interval_seconds", interval_seconds)
+                config.setdefault("max_consecutive_failures", 5)
+                config.setdefault("failure_retry_delay_seconds", max(30, min(300, interval_seconds // 2 or 30)))
+
                 submit_fn = self._submit_factory(chat_id, config.get("session_id", ""), config)
                 # Reset run count and status
                 status["status"] = "scheduled"
                 status["runs_completed"] = status.get("runs_completed", 0)
+                status["consecutive_failures"] = int(status.get("consecutive_failures") or 0)
                 status["runner_alive"] = True
 
                 async with self._lock:
@@ -163,17 +186,21 @@ class PromptCronManager:
             raise ValueError("max_runs must be 0 or greater")
 
         task_id = f"cron-{uuid.uuid4().hex[:10]}"
+        interval_seconds = int(interval_minutes * 60)
         config = {
             "task_id": task_id,
             "task_name": task_name or f"Prompt cron {task_id}",
             "kind": "prompt_cron",
             "session_id": session_id,
             "interval_minutes": interval_minutes,
-            "interval_seconds": int(interval_minutes * 60),
+            "interval_seconds": interval_seconds,
             "prompt": prompt.strip(),
             "repeat": repeat,
             "max_runs": max_runs,
             "run_immediately": run_immediately,
+            # Robustness: tolerate transient provider/network hiccups.
+            "max_consecutive_failures": 5,
+            "failure_retry_delay_seconds": max(30, min(300, interval_seconds // 2 or 30)),
         }
         status = {
             "task_id": task_id,
@@ -181,6 +208,7 @@ class PromptCronManager:
             "created_at": _utc_now(),
             "user_id": user_id,
             "runs_completed": 0,
+            "consecutive_failures": 0,
             "runner_alive": True,
             "config": config,
         }
@@ -222,10 +250,19 @@ class PromptCronManager:
                 _persist_cron(task_id, config, status)
 
                 _logger.info("Executing run #%d: %s", runs_completed + 1, config.get("prompt", "")[:50])
-                ok = await submit_prompt(config["session_id"], config["prompt"])
+                submit_error: str | None = None
+                try:
+                    raw_result = await submit_prompt(config["session_id"], config["prompt"])
+                    ok, submit_error = _coerce_submit_result(raw_result)
+                except Exception as e:
+                    ok = False
+                    submit_error = str(e)
+                    _logger.exception("Run #%d submit raised", runs_completed + 1)
+
                 _logger.info("Run #%d finished ok=%s", runs_completed + 1, ok)
                 finished_at = _utc_now()
 
+                retry_delay = 0
                 async with self._lock:
                     status = self._tasks.get(task_id)
                     if not status:
@@ -238,28 +275,69 @@ class PromptCronManager:
                         "prompt_submitted": ok,
                         "prompt": config["prompt"],
                     }
+
                     if not ok:
-                        status["status"] = "failed"
-                        status["error"] = "Submit returned False"
-                        status["finished_at"] = finished_at
-                        status["runner_alive"] = False
+                        status["consecutive_failures"] = int(status.get("consecutive_failures") or 0) + 1
+                        status["last_error"] = submit_error or "Submit returned False"
+                        status["last_error_at"] = finished_at
+
+                        # One-shot tasks fail immediately. Repeating tasks get retries.
+                        if not config.get("repeat", True):
+                            status["status"] = "failed"
+                            status["error"] = status["last_error"]
+                            status["finished_at"] = finished_at
+                            status["runner_alive"] = False
+                            _persist_cron(task_id, config, status)
+                            return
+
+                        max_failures = int(config.get("max_consecutive_failures") or 5)
+                        if int(status["consecutive_failures"]) >= max_failures:
+                            status["status"] = "failed"
+                            status["error"] = (
+                                f"{status['last_error']} (consecutive failures: {status['consecutive_failures']})"
+                            )
+                            status["finished_at"] = finished_at
+                            status["runner_alive"] = False
+                            _persist_cron(task_id, config, status)
+                            return
+
+                        status["status"] = "scheduled"
                         _persist_cron(task_id, config, status)
-                        return
-                    if not config.get("repeat", True):
-                        status["status"] = "completed"
-                        status["finished_at"] = finished_at
-                        status["runner_alive"] = False
+                        retry_delay = int(config.get("failure_retry_delay_seconds") or 30)
+                        _logger.warning(
+                            "Run #%d failed (%s). consecutive_failures=%d/%d; retrying in %ds",
+                            runs_completed,
+                            status.get("last_error", "unknown"),
+                            status["consecutive_failures"],
+                            max_failures,
+                            retry_delay,
+                        )
+                    else:
+                        # Success path
+                        status["consecutive_failures"] = 0
+                        status.pop("last_error", None)
+                        status.pop("last_error_at", None)
+                        status.pop("error", None)
+
+                        if not config.get("repeat", True):
+                            status["status"] = "completed"
+                            status["finished_at"] = finished_at
+                            status["runner_alive"] = False
+                            _persist_cron(task_id, config, status)
+                            return
+                        max_runs = int(config.get("max_runs") or 0)
+                        if max_runs > 0 and runs_completed >= max_runs:
+                            status["status"] = "completed"
+                            status["finished_at"] = finished_at
+                            status["runner_alive"] = False
+                            _persist_cron(task_id, config, status)
+                            return
+                        status["status"] = "scheduled"
                         _persist_cron(task_id, config, status)
-                        return
-                    max_runs = int(config.get("max_runs") or 0)
-                    if max_runs > 0 and runs_completed >= max_runs:
-                        status["status"] = "completed"
-                        status["finished_at"] = finished_at
-                        status["runner_alive"] = False
-                        _persist_cron(task_id, config, status)
-                        return
-                    status["status"] = "scheduled"
-                    _persist_cron(task_id, config, status)
+
+                if retry_delay > 0:
+                    await asyncio.sleep(max(1, retry_delay))
+                    continue
 
         except asyncio.CancelledError:
             async with self._lock:
