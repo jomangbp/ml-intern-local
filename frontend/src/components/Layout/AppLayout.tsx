@@ -733,17 +733,31 @@ export default function AppLayout() {
                 }}
               />
             </Tooltip>
-            <Tooltip title="Resume saved session">
-              <IconButton
+            <Tooltip title="Restore or resume a saved session">
+              <Button
                 onClick={() => setSavedSessionsOpen(true)}
                 size="small"
+                startIcon={<RestoreIcon fontSize="small" />}
                 sx={{
-                  color: 'text.secondary',
-                  '&:hover': { color: '#FF9D00' },
+                  minWidth: 0,
+                  px: 1,
+                  py: 0.25,
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  textTransform: 'none',
+                  color: '#FF9D00',
+                  borderColor: 'rgba(255,157,0,0.35)',
+                  '& .MuiButton-startIcon': { mr: { xs: 0, md: 0.5 } },
+                  '& .restore-label': { display: { xs: 'none', md: 'inline' } },
+                  '&:hover': {
+                    borderColor: '#FF9D00',
+                    bgcolor: 'rgba(255,157,0,0.08)',
+                  },
                 }}
+                variant="outlined"
               >
-                <RestoreIcon fontSize="small" />
-              </IconButton>
+                <Box component="span" className="restore-label">Restore Sessions</Box>
+              </Button>
             </Tooltip>
             <Tooltip title="Configure training scheduler / watchdog">
               <IconButton
