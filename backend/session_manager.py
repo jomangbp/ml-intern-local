@@ -878,6 +878,36 @@ class SessionManager:
 
             logger.info(f"Session {session_id} ended")
 
+    async def set_session_execution_mode(self, session_id: str, local_mode: bool) -> dict[str, Any]:
+        """Hot-switch an active session between local host tools and HF sandbox tools."""
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            raise ValueError(f"Session {session_id} not found or inactive")
+        if agent_session.is_processing:
+            raise RuntimeError("Cannot switch execution mode while session is processing")
+
+        agent_session.local_mode = bool(local_mode)
+        agent_session.tool_router.set_local_mode(bool(local_mode))
+        agent_session.session.tool_router = agent_session.tool_router
+        agent_session.session.execution_mode = "local" if local_mode else "sandbox"
+
+        # Refresh system prompt so the model knows whether it has local tools or sandbox tools.
+        cm = agent_session.session.context_manager
+        tool_specs = agent_session.tool_router.get_tool_specs_for_llm()
+        cm.tool_specs = tool_specs
+        cm.system_prompt = cm._load_system_prompt(
+            tool_specs,
+            prompt_file_suffix="system_prompt_v3.yaml",
+            hf_token=agent_session.hf_token,
+            local_mode=bool(local_mode),
+        )
+        if cm.items:
+            cm.items[0].content = cm.system_prompt
+
+        mode = "local" if local_mode else "sandbox"
+        logger.info("Switched session %s execution mode to %s", session_id, mode)
+        return self.get_session_info(session_id) or {}
+
     async def submit(self, session_id: str, operation: Operation) -> bool:
         """Submit an operation to a session."""
         async with self._lock:

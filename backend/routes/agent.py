@@ -624,6 +624,26 @@ async def get_session(
     return SessionInfo(**info)
 
 
+@router.post("/session/{session_id}/execution-mode")
+async def set_session_execution_mode(
+    session_id: str,
+    body: dict,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Switch an active session between Local PC and HF Sandbox tools."""
+    _check_session_access(session_id, user)
+    local_mode = _parse_execution_mode((body or {}).get("execution_mode"))
+    if local_mode is None:
+        raise HTTPException(status_code=400, detail="execution_mode is required")
+    try:
+        info = await session_manager.set_session_execution_mode(session_id, local_mode)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "session": info}
+
+
 @router.post("/session/{session_id}/model")
 async def set_session_model(
     session_id: str,

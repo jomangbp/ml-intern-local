@@ -233,6 +233,28 @@ class ToolRouter:
             await self.mcp_client.__aexit__(exc_type, exc, tb)
             self._mcp_initialized = False
 
+    def set_local_mode(self, local_mode: bool) -> None:
+        """Hot-swap built-in execution tools between sandbox and local mode.
+
+        MCP/OpenAPI tools are preserved. Shared names like bash/read/write/edit
+        are overwritten with the correct handler for the chosen mode.
+        """
+        mode_specific = {
+            "sandbox_create",
+            "hf_jobs",
+            "local_training",
+            "local_scheduler",
+            "bash",
+            "read",
+            "write",
+            "edit",
+        }
+        for name in mode_specific:
+            self.tools.pop(name, None)
+        for tool in create_builtin_tools(local_mode=local_mode):
+            self.register_tool(tool)
+        logger.info("Switched built-in tools to %s mode (%d tools total)", "local" if local_mode else "sandbox", len(self.tools))
+
     async def call_tool(
         self,
         tool_name: str,

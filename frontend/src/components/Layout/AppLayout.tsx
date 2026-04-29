@@ -236,7 +236,26 @@ export default function AppLayout() {
     const next: ExecutionMode = preferredExecutionMode === 'local' ? 'sandbox' : 'local';
     setPreferredExecutionModeState(next);
     setPreferredExecutionMode(next);
-  }, [preferredExecutionMode]);
+
+    if (activeSessionId) {
+      void (async () => {
+        try {
+          const res = await apiFetch(`/api/session/${activeSessionId}/execution-mode`, {
+            method: 'POST',
+            body: JSON.stringify({ execution_mode: next }),
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          const mode = data?.session?.execution_mode;
+          if (mode === 'local' || mode === 'sandbox') {
+            setActiveExecutionMode(mode);
+          }
+        } catch {
+          // Preference still applies to future sessions.
+        }
+      })();
+    }
+  }, [preferredExecutionMode, activeSessionId]);
 
   const refreshSettings = useCallback(async () => {
     try {
@@ -701,7 +720,7 @@ export default function AppLayout() {
                 size="small"
                 clickable
                 onClick={toggleLocalOption}
-                label={preferredExecutionMode === 'local' ? 'Local: ON' : 'Local: OFF'}
+                label={activeExecutionMode === 'local' ? 'Local: ACTIVE' : preferredExecutionMode === 'local' ? 'Local: ON' : 'Local: OFF'}
                 sx={{
                   height: 22,
                   fontSize: '0.66rem',
@@ -927,7 +946,7 @@ export default function AppLayout() {
               size="small"
               clickable
               onClick={toggleLocalOption}
-              label={preferredExecutionMode === 'local' ? 'Local: ON' : 'Local: OFF'}
+              label={activeExecutionMode === 'local' ? 'Local: ACTIVE' : preferredExecutionMode === 'local' ? 'Local: ON' : 'Local: OFF'}
               sx={{
                 fontWeight: 600,
                 color: preferredExecutionMode === 'local' ? '#000' : 'var(--muted-text)',
