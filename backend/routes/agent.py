@@ -537,8 +537,31 @@ async def restore_session_summary(
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
-        logger.exception("seed_from_summary failed")
-        raise HTTPException(status_code=500, detail=f"Summary failed: {e}")
+        # Local installs often have a stale/invalid default provider key. If
+        # the caller did not explicitly request a model, retry restore-summary
+        # through Codex-auth GPT so expired browser sessions can still recover.
+        if not model:
+            logger.warning("seed_from_summary failed with default model; retrying with Codex GPT: %s", e)
+            try:
+                await session_manager.delete_session(session_id)
+            except Exception:
+                pass
+            try:
+                fallback_model = "openai/gpt-5.3-codex"
+                session_id = await session_manager.create_session(
+                    user_id=user["user_id"],
+                    hf_token=hf_token,
+                    model=fallback_model,
+                    local_mode=execution_mode,
+                    provider_keys=provider_keys,
+                )
+                summarized = await session_manager.seed_from_summary(session_id, messages)
+            except Exception as fallback_error:
+                logger.exception("seed_from_summary fallback failed")
+                raise HTTPException(status_code=500, detail=f"Summary failed: {fallback_error}")
+        else:
+            logger.exception("seed_from_summary failed")
+            raise HTTPException(status_code=500, detail=f"Summary failed: {e}")
 
     logger.info(
         f"Seeded session {session_id} for {user.get('username', 'unknown')} "
