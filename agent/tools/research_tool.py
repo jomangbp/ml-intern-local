@@ -414,10 +414,25 @@ async def research_handler(
         # LiteLLM's raw Message carries `provider_specific_fields` and
         # `reasoning_content`, which the HF router's OpenAI schema rejects
         # if we echo them back in the next request.
+        safe_tool_calls: list[dict[str, Any]] = []
+        for tc in msg.tool_calls:
+            tc_id = getattr(tc, "id", None) or (tc.get("id") if isinstance(tc, dict) else None)
+            tc_fn = getattr(tc, "function", None) or (tc.get("function") if isinstance(tc, dict) else None)
+            fn_name = getattr(tc_fn, "name", None) or (tc_fn.get("name") if isinstance(tc_fn, dict) else None)
+            fn_args = getattr(tc_fn, "arguments", None) or (tc_fn.get("arguments") if isinstance(tc_fn, dict) else "{}")
+            safe_tool_calls.append({
+                "id": tc_id,
+                "type": "function",
+                "function": {
+                    "name": fn_name,
+                    "arguments": fn_args,
+                },
+            })
+
         messages.append(Message(
             role="assistant",
             content=msg.content,
-            tool_calls=msg.tool_calls,
+            tool_calls=safe_tool_calls,
         ))
         for tc in msg.tool_calls:
             try:
