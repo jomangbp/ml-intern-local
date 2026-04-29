@@ -464,6 +464,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         }
         return;
       }
+      void hydrateFromBackend();
       logger.error('useChat error:', error);
       if (isActiveRef.current) {
         useAgentStore.getState().setError(error.message);
@@ -925,5 +926,6 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
     approveTools,
     declineBlockedJobs,
     continueBlockedJobsWithNamespace,
+    refreshFromBackend: hydrateFromBackend,
   };
 }

@@ -26,7 +26,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
   const { updateSessionTitle, sessions } = useSessionStore();
   const isExpired = sessions.find((s) => s.id === sessionId)?.expired === true;
 
-  const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools, declineBlockedJobs, continueBlockedJobsWithNamespace } = useAgentChat({
+  const { messages, sendMessage, stop, status, undoLastTurn, editAndRegenerate, approveTools, declineBlockedJobs, continueBlockedJobsWithNamespace, refreshFromBackend } = useAgentChat({
     sessionId,
     isActive,
     onReady: () => logger.log(`Session ${sessionId} ready`),
@@ -74,6 +74,15 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
       updateSession(sessionId, { isProcessing: true, activityStatus: { type: 'thinking' } });
       sendMessage({ text: text.trim(), metadata: { createdAt: new Date().toISOString() } });
 
+      // Safety net: if the SDK stream is interrupted or the browser misses
+      // chunks, reconcile the visible chat from backend history shortly after
+      // submission. The backend is the source of truth.
+      [3000, 8000, 15000].forEach((delay) => {
+        window.setTimeout(() => {
+          void refreshFromBackend();
+        }, delay);
+      });
+
       // Auto-title the session from the first user message
       const isFirstMessage = messages.filter((m) => m.role === 'user').length === 0;
       if (isFirstMessage) {
@@ -91,7 +100,7 @@ export default function SessionChat({ sessionId, isActive, onSessionDead }: Sess
           });
       }
     },
-    [sessionId, sendMessage, messages, updateSessionTitle, busy, updateSession],
+    [sessionId, sendMessage, messages, updateSessionTitle, busy, updateSession, refreshFromBackend],
   );
 
   // Don't render UI for background sessions — hooks still run
