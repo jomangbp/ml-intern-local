@@ -723,6 +723,15 @@ class SessionManager:
         if restored:
             cm = agent_session.session.context_manager
             cm.items = [cm.items[0]] + restored
+            cm.items.append(Message(
+                role="user",
+                content=(
+                    "[SYSTEM: This session was restored from a saved snapshot. "
+                    "Continue normally from the prior conversation using the currently available tools. "
+                    "If earlier tool results mention missing credentials or unavailable tools, re-check with current tools instead of assuming the blocker still exists. "
+                    "When the user asks to proceed/start, perform concrete tool actions in this same turn; do not say you will do it in the next turn.]"
+                ),
+            ))
         return session_id, self._saved_session_meta(path, data)
 
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:

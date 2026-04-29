@@ -4,7 +4,6 @@ Provides ToolSpec and ToolRouter for managing both built-in and MCP tools
 """
 
 import logging
-import os
 import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -403,15 +402,6 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             handler=hf_catalog_handler,
         ),
     ]
-
-    if not os.environ.get("GITHUB_TOKEN"):
-        disabled_github = {
-            GITHUB_FIND_EXAMPLES_TOOL_SPEC["name"],
-            GITHUB_LIST_REPOS_TOOL_SPEC["name"],
-            GITHUB_READ_FILE_TOOL_SPEC["name"],
-        }
-        tools = [t for t in tools if t.name not in disabled_github]
-        logger.info("GITHUB_TOKEN missing; disabled GitHub API tools")
 
     # Sandbox or local tools (highest priority)
     if local_mode:

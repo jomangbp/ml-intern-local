@@ -33,13 +33,6 @@ def list_repos(
         ToolResult with repository information
     """
     token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        return {
-            "formatted": "Error: GITHUB_TOKEN environment variable is required",
-            "totalResults": 0,
-            "resultsShared": 0,
-            "isError": True,
-        }
 
     if owner_type == "org":
         url = f"https://api.github.com/orgs/{owner}/repos"
@@ -49,8 +42,9 @@ def list_repos(
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "Authorization": f"Bearer {token}",
     }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     all_repos = []
     page = 1

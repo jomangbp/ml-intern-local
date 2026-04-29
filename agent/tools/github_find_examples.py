@@ -53,13 +53,20 @@ EXAMPLE_PATTERNS = [
 ]
 
 
-def _get_repo_tree(org: str, repo: str, token: str) -> tuple[List[Dict[str, Any]], str]:
-    """Get all files in a repository recursively. Returns (files, error_message)"""
+def _github_headers(token: str | None = None, *, raw: bool = False) -> Dict[str, str]:
+    """GitHub API headers. Token is optional; public API works unauthenticated."""
     headers = {
-        "Accept": "application/vnd.github+json",
+        "Accept": "application/vnd.github.raw" if raw else "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "Authorization": f"Bearer {token}",
     }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _get_repo_tree(org: str, repo: str, token: str | None = None) -> tuple[List[Dict[str, Any]], str]:
+    """Get all files in a repository recursively. Returns (files, error_message)"""
+    headers = _github_headers(token)
 
     full_repo = f"{org}/{repo}"
 
@@ -109,13 +116,9 @@ def _get_repo_tree(org: str, repo: str, token: str) -> tuple[List[Dict[str, Any]
         return [], f"Error processing tree: {str(e)}"
 
 
-def _search_similar_repos(org: str, repo: str, token: str) -> List[Dict[str, Any]]:
+def _search_similar_repos(org: str, repo: str, token: str | None = None) -> List[Dict[str, Any]]:
     """Search for similar repository names in the organization"""
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Authorization": f"Bearer {token}",
-    }
+    headers = _github_headers(token)
 
     # Search for repos in the org with similar name
     query = f"org:{org} {repo}"
@@ -285,13 +288,6 @@ def find_examples(
         ToolResult with matching files, or similar repos if repo not found
     """
     token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        return {
-            "formatted": "Error: GITHUB_TOKEN environment variable is required",
-            "totalResults": 0,
-            "resultsShared": 0,
-            "isError": True,
-        }
 
     if not repo:
         return {

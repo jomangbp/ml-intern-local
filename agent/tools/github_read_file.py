@@ -85,13 +85,6 @@ def read_file(
         ToolResult with file contents and metadata
     """
     token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        return {
-            "formatted": "Error: GITHUB_TOKEN environment variable is required",
-            "totalResults": 0,
-            "resultsShared": 0,
-            "isError": True,
-        }
 
     # Parse repo
     if "/" not in repo:
@@ -107,8 +100,9 @@ def read_file(
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "Authorization": f"Bearer {token}",
     }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     # Fetch file contents
     url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{path}"
@@ -163,8 +157,9 @@ def read_file(
             raw_headers = {
                 "Accept": "application/vnd.github.raw",
                 "X-GitHub-Api-Version": "2022-11-28",
-                "Authorization": f"Bearer {token}",
             }
+            if token:
+                raw_headers["Authorization"] = f"Bearer {token}"
             raw_response = requests.get(
                 url, headers=raw_headers, params=params, timeout=30
             )
