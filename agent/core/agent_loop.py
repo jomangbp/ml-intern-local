@@ -727,6 +727,7 @@ class Handlers:
         final_response = None
         errored = False
         max_iterations = session.config.max_iterations
+        empty_response_retries = 0
 
         while max_iterations == -1 or iteration < max_iterations:
             # ── Cancellation check: before LLM call ──
@@ -864,6 +865,41 @@ class Handlers:
                         Event(event_type="assistant_stream_end", data={})
                     )
 
+                # If the model returns neither text nor tool calls, do not end
+                # the turn silently. Codex Responses can occasionally emit an
+                # empty stop after tool results; ask once for an explicit final
+                # response so the UI never appears to "close" without answer.
+                if not tool_calls and not content:
+                    empty_response_retries += 1
+                    if empty_response_retries > 2:
+                        fallback = (
+                            "I did not receive a usable model response after tool execution. "
+                            "The turn stopped to avoid looping. Please send the next instruction, "
+                            "or retry with a shorter prompt."
+                        )
+                        assistant_msg = Message(role="assistant", content=fallback)
+                        session.context_manager.add_message(assistant_msg, token_count)
+                        await session.send_event(
+                            Event(event_type="assistant_message", data={"content": fallback})
+                        )
+                        final_response = fallback
+                        break
+                    logger.warning(
+                        "Empty LLM response with no tool calls at iteration %d/%d; nudging model to continue",
+                        iteration,
+                        max_iterations,
+                    )
+                    session.context_manager.add_message(Message(
+                        role="user",
+                        content=(
+                            "[SYSTEM: Your previous response was empty after tool execution. "
+                            "Continue now. Summarize what happened, handle any tool errors, "
+                            "and either proceed with the task using available tools or explain the blocker.]"
+                        ),
+                    ))
+                    iteration += 1
+                    continue
+
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
                     logger.debug(
@@ -880,10 +916,9 @@ class Handlers:
                         max_iterations,
                         (content or "")[:500],
                     )
-                    if content:
-                        assistant_msg = Message(role="assistant", content=content)
-                        session.context_manager.add_message(assistant_msg, token_count)
-                        final_response = content
+                    assistant_msg = Message(role="assistant", content=content)
+                    session.context_manager.add_message(assistant_msg, token_count)
+                    final_response = content
                     break
 
                 # Validate tool call args (one json.loads per call, once)
