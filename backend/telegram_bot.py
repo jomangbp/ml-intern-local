@@ -853,14 +853,13 @@ class TelegramBotService:
         await self._send_message(chat_id, "\n".join(lines), parse_mode="Markdown")
 
     async def _resume_saved_session(self, chat_id: int, saved_id: str) -> None:
-        local_mode = self.execution_mode != "sandbox"
         user_id = f"telegram:{chat_id}"
         provider_keys = session_manager.get_effective_provider_keys(user_id)
         try:
             session_id, saved = await session_manager.resume_saved_session(
                 saved_id,
                 user_id=user_id,
-                local_mode=local_mode,
+                local_mode=None,
                 provider_keys=provider_keys,
                 mode="exact",
             )

@@ -22,7 +22,6 @@ import RestoreIcon from '@mui/icons-material/Restore';
 import { apiFetch } from '@/utils/api';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
-import { getPreferredExecutionMode } from '@/utils/executionMode';
 
 interface SavedSessionInfo {
   saved_id: string;
@@ -95,7 +94,7 @@ export default function SavedSessionsDialog({ open, onClose, currentSessionId }:
     try {
       const res = await apiFetch(`/api/saved-sessions/${encodeURIComponent(saved.saved_id)}/resume`, {
         method: 'POST',
-        body: JSON.stringify({ mode: 'exact', execution_mode: getPreferredExecutionMode() }),
+        body: JSON.stringify({ mode: 'exact' }),
       });
       if (!res.ok) throw new Error(`Resume failed: ${res.status}`);
       const data = await res.json();

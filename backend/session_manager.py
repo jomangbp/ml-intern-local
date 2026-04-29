@@ -561,6 +561,26 @@ class SessionManager:
         )
 
     @staticmethod
+    def _infer_saved_execution_mode(data: dict[str, Any]) -> str | None:
+        """Return saved execution mode, inferring old logs when metadata is absent."""
+        mode = data.get("execution_mode")
+        if mode in {"local", "sandbox"}:
+            return str(mode)
+        tool_names: set[str] = set()
+        for tool in data.get("tools") or []:
+            if isinstance(tool, dict):
+                name = tool.get("name")
+                if not name and isinstance(tool.get("function"), dict):
+                    name = tool["function"].get("name")
+                if isinstance(name, str):
+                    tool_names.add(name)
+        if {"local_training", "local_scheduler"} & tool_names:
+            return "local"
+        if {"sandbox_create", "hf_jobs"} & tool_names:
+            return "sandbox"
+        return None
+
+    @staticmethod
     def _saved_session_title(data: dict[str, Any]) -> str:
         title = data.get("title")
         if isinstance(title, str) and title.strip():
@@ -583,7 +603,7 @@ class SessionManager:
             "title": cls._saved_session_title(data),
             "model": data.get("model_name"),
             "user_id": data.get("user_id"),
-            "execution_mode": data.get("execution_mode"),
+            "execution_mode": cls._infer_saved_execution_mode(data),
             "message_count": len(messages),
             "last_save_time": cls._saved_session_time(data, path),
             "created_at": data.get("session_start_time"),
@@ -668,7 +688,7 @@ class SessionManager:
                 raise PermissionError("Saved session belongs to another user")
 
         saved_model = data.get("model_name") if isinstance(data.get("model_name"), str) else None
-        saved_mode = data.get("execution_mode")
+        saved_mode = self._infer_saved_execution_mode(data)
         if local_mode is None and saved_mode in ("local", "sandbox"):
             local_mode = saved_mode == "local"
 
