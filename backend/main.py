@@ -7,9 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from routes.agent import router as agent_router
 from routes.auth import router as auth_router
 from routes.gateway import router as gateway_router
@@ -147,14 +146,29 @@ async def gateway_health_endpoint():
     )
 
 
-# Serve static files (frontend build) in production
-# MUST be after all API routes — mount("/") catches everything
-static_path = Path(__file__).parent.parent / "static"
-if static_path.exists():
-    app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
-    logger.info(f"Serving static files from {static_path}")
+@app.get("/")
+async def root_disabled():
+    """Do not serve a second UI from the API port in local development."""
+    raise HTTPException(
+        status_code=404,
+        detail="ML Intern API only on port 7860. Use the UI at http://localhost:5173",
+    )
+
+
+# Do NOT serve frontend/static on port 7860 by default. The local dev UI is
+# Vite on http://localhost:5173; serving a stale static build here caused too
+# much confusion. Set ML_INTERN_SERVE_STATIC=1 only for packaged deployments.
+if os.environ.get("ML_INTERN_SERVE_STATIC") == "1":
+    from fastapi.staticfiles import StaticFiles
+
+    static_path = Path(__file__).parent.parent / "static"
+    if static_path.exists():
+        app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
+        logger.info(f"Serving static files from {static_path}")
+    else:
+        logger.info("ML_INTERN_SERVE_STATIC=1 but no static directory found")
 else:
-    logger.info("No static directory found, running in API-only mode")
+    logger.info("Static UI disabled on API port; use http://localhost:5173")
 
 
 if __name__ == "__main__":
