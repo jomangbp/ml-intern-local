@@ -20,6 +20,7 @@ import GroupAddIcon from '@mui/icons-material/GroupAdd';
 import LoginIcon from '@mui/icons-material/Login';
 import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import RestoreIcon from '@mui/icons-material/Restore';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
@@ -27,6 +28,7 @@ import { getPreferredExecutionMode, setPreferredExecutionMode, type ExecutionMod
 import { isInIframe, triggerLogin } from '@/hooks/useAuth';
 import { useOrgMembership } from '@/hooks/useOrgMembership';
 import TelegramSettingsPanel from '@/components/TelegramSettingsPanel';
+import SavedSessionsDialog from '@/components/SavedSessionsDialog';
 
 const HF_ORANGE = '#FF9D00';
 const ORG_JOIN_URL =
@@ -212,6 +214,7 @@ export default function WelcomeScreen() {
   const [minimaxConfigured, setMinimaxConfigured] = useState(false);
   const [zaiConfigured, setZaiConfigured] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
 
   const inIframe = isInIframe();
   const isAuthenticated = !!user?.authenticated;
@@ -697,6 +700,25 @@ export default function WelcomeScreen() {
       </Button>
 
       {onboardingChecklist}
+
+      <Button
+        variant="outlined"
+        onClick={() => setRestoreOpen(true)}
+        startIcon={<RestoreIcon sx={{ fontSize: 16 }} />}
+        sx={{
+          width: '100%',
+          maxWidth: 520,
+          mt: 1.5,
+          borderRadius: '12px',
+          textTransform: 'none',
+          color: 'var(--text)',
+          borderColor: 'var(--border)',
+        }}
+      >
+        Resume saved session
+      </Button>
+
+      <SavedSessionsDialog open={restoreOpen} onClose={() => setRestoreOpen(false)} />
 
       <Typography
         variant="caption"

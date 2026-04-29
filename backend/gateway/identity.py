@@ -20,17 +20,17 @@ IDENTITY_STORE_PATH = Path(os.environ.get(
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "owner": {
         "run_plan", "approve", "reject", "kill_job", "view_logs", "view_status",
-        "create_cron", "cancel_cron", "model_select", "session_new",
+        "create_cron", "cancel_cron", "model_select", "session_new", "session_resume",
         "session_interrupt", "run_bash", "run_training", "gateway_admin",
     },
     "admin": {
         "run_plan", "approve", "reject", "kill_job", "view_logs", "view_status",
-        "create_cron", "cancel_cron", "model_select", "session_new",
+        "create_cron", "cancel_cron", "model_select", "session_new", "session_resume",
         "session_interrupt", "run_bash", "run_training",
     },
     "user": {
         "run_plan", "view_logs", "view_status", "create_cron", "cancel_cron",
-        "model_select", "session_new", "session_interrupt",
+        "model_select", "session_new", "session_resume", "session_interrupt",
     },
     "viewer": {
         "view_logs", "view_status",
@@ -54,6 +54,8 @@ COMMAND_PERMISSIONS: dict[str, str] = {
     "gateway": "view_status",
     "status": "view_status",
     "sessions": "view_status",
+    "resume": "session_resume",
+    "save": "session_resume",
     "crons": "view_status",
     "approvals": "view_status",
     "events": "gateway_admin",

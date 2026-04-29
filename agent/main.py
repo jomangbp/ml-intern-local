@@ -1257,15 +1257,24 @@ def cli():
     gw_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     gw_parser.add_argument("--detach", "-d", action="store_true", help="Run gateway in background (daemon)")
 
+    # ── Resume: create a live backend session from saved local logs ──
+    resume_parser = subparsers.add_parser("resume", help="List or resume saved backend sessions")
+    resume_parser.add_argument("saved_id", nargs="?", default="list", help="Saved id to resume, or 'list'")
+    resume_parser.add_argument("--mode", choices=["exact", "summary"], default="exact", help="Resume mode")
+    resume_parser.add_argument("--port", type=int, default=7860, help="Gateway/backend port")
+    resume_parser.add_argument("--host", default="127.0.0.1", help="Gateway/backend host")
+
     # Parse with backwards compat: no subcommand or unknown arg → chat mode
-    # If first arg is not "chat" or "gateway", inject "chat" before parsing
-    if sys.argv[1:] and sys.argv[1] not in ("chat", "gateway", "-h", "--help"):
+    # If first arg is not "chat", "gateway", or "resume", inject "chat" before parsing
+    if sys.argv[1:] and sys.argv[1] not in ("chat", "gateway", "resume", "-h", "--help"):
         sys.argv.insert(1, "chat")
 
     args = parser.parse_args()
 
     if args.command == "gateway":
         _gateway_dispatch(args)
+    elif args.command == "resume":
+        _resume_dispatch(args)
     else:
         # Default: chat / headless mode
         prompt = getattr(args, "prompt", None)
@@ -1281,6 +1290,44 @@ def cli():
                 asyncio.run(main())
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
+
+
+def _resume_dispatch(args) -> None:
+    """List/resume saved sessions through the running gateway API."""
+    import urllib.error
+    import urllib.request
+
+    base = f"http://{args.host}:{args.port}"
+    saved_id = getattr(args, "saved_id", "list") or "list"
+    try:
+        if saved_id in {"list", "ls"}:
+            with urllib.request.urlopen(f"{base}/api/saved-sessions?limit=30", timeout=10) as resp:
+                data = json.loads(resp.read())
+            sessions = data.get("sessions") or []
+            if not sessions:
+                print("No saved sessions found.")
+                return
+            for item in sessions:
+                print(f"{item.get('saved_id')}  {item.get('last_save_time')}  {item.get('title')}")
+            return
+
+        payload = json.dumps({"mode": getattr(args, "mode", "exact")}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base}/api/saved-sessions/{saved_id}/resume",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        print(data.get("session_id", ""))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        print(f"Resume failed ({e.code}): {detail}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Resume failed: {e}")
+        sys.exit(1)
 
 
 def _gateway_dispatch(args) -> None:
@@ -1406,7 +1453,7 @@ def _gateway_start(args, pid_file: "Path", detach: bool = False) -> None:
         cmd = [sys.executable, "-m", "agent.main", "gateway", "--port", str(args.port), "--host", args.host]
         if args.verbose:
             cmd.append("--verbose")
-        log_file = _P.home() / ".cache" / "ml-intern" / "gateway.log"
+        log_file = Path.home() / ".cache" / "ml-intern" / "gateway.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         proc = subprocess.Popen(
             cmd,

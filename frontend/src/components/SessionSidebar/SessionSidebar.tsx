@@ -16,10 +16,12 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import RestoreIcon from '@mui/icons-material/Restore';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
 import { apiFetch } from '@/utils/api';
 import { getPreferredExecutionMode } from '@/utils/executionMode';
+import SavedSessionsDialog from '@/components/SavedSessionsDialog';
 
 interface SessionSidebarProps {
   onClose?: () => void;
@@ -32,6 +34,7 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
     useAgentStore();
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [capacityError, setCapacityError] = useState<string | null>(null);
+  const [restoreOpen, setRestoreOpen] = useState(false);
 
   // -- Handlers -----------------------------------------------------------
 
@@ -333,6 +336,34 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
       >
         <Box
           component="button"
+          onClick={() => setRestoreOpen(true)}
+          sx={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 0.75,
+            width: '100%',
+            px: 1.5,
+            py: 1,
+            border: '1px solid var(--border)',
+            borderRadius: '10px',
+            bgcolor: 'rgba(255,255,255,0.04)',
+            color: 'var(--text)',
+            fontSize: '0.82rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            transition: 'all 0.12s ease',
+            '&:hover': {
+              bgcolor: 'var(--hover-bg)',
+            },
+          }}
+        >
+          <RestoreIcon sx={{ fontSize: 16 }} />
+          Resume Saved
+        </Box>
+
+        <Box
+          component="button"
           onClick={handleNewSession}
           disabled={isCreatingSession}
           sx={{
@@ -374,6 +405,11 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
         </Box>
 
       </Box>
+      <SavedSessionsDialog
+        open={restoreOpen}
+        onClose={() => setRestoreOpen(false)}
+        currentSessionId={activeSessionId}
+      />
       {/* Delete confirmation dialog */}
       <Dialog
         open={!!confirmDeleteId}

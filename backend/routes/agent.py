@@ -249,6 +249,20 @@ def _read_hf_cached_token() -> str | None:
         return None
 
 
+def _hf_token_from_request(request: Request) -> str | None:
+    hf_token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        hf_token = auth_header[7:]
+    if not hf_token:
+        hf_token = request.cookies.get("hf_access_token")
+    if not hf_token:
+        hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        hf_token = _read_hf_cached_token()
+    return hf_token
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
@@ -530,6 +544,73 @@ async def restore_session_summary(
         f"Seeded session {session_id} for {user.get('username', 'unknown')} "
         f"(summary of {summarized} messages)"
     )
+    return SessionResponse(session_id=session_id, ready=True)
+
+
+@router.get("/saved-sessions")
+async def list_saved_sessions(
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """List locally persisted session snapshots available for resume."""
+    return {"sessions": session_manager.list_saved_sessions(user_id=user["user_id"], limit=limit)}
+
+
+@router.post("/session/{session_id}/save")
+async def save_session_snapshot(
+    session_id: str,
+    body: dict | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Persist a live session snapshot to local session_logs/."""
+    _check_session_access(session_id, user)
+    title = str((body or {}).get("title") or "").strip() or None
+    try:
+        saved = await session_manager.save_current_session(session_id, title=title)
+    except Exception as e:
+        logger.exception("save_current_session failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "saved_session": saved}
+
+
+@router.post("/saved-sessions/{saved_id}/resume", response_model=SessionResponse)
+async def resume_saved_session(
+    saved_id: str,
+    request: Request,
+    body: dict | None = None,
+    user: dict = Depends(get_current_user),
+) -> SessionResponse:
+    """Create a live session from a saved local session snapshot."""
+    payload = body or {}
+    mode = str(payload.get("mode") or "exact").strip().lower()
+    if mode not in {"exact", "summary"}:
+        raise HTTPException(status_code=400, detail="mode must be 'exact' or 'summary'")
+    execution_mode = _parse_execution_mode(payload.get("execution_mode"))
+    model = payload.get("model")
+    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    if model and model not in valid_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+    resolved_model = model or session_manager.config.model_name
+    await _require_hf_for_anthropic(request, resolved_model)
+    try:
+        session_id, _saved = await session_manager.resume_saved_session(
+            saved_id,
+            user_id=user["user_id"],
+            hf_token=_hf_token_from_request(request),
+            model=model,
+            local_mode=execution_mode,
+            provider_keys=session_manager.get_effective_provider_keys(user["user_id"]),
+            mode=mode,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Saved session not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied to saved session")
+    except SessionCapacityError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("resume_saved_session failed")
+        raise HTTPException(status_code=500, detail=str(e))
     return SessionResponse(session_id=session_id, ready=True)
 
 

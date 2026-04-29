@@ -118,6 +118,11 @@ class SessionCapacityError(Exception):
 MAX_SESSIONS: int = 200
 MAX_SESSIONS_PER_USER: int = 10
 
+SAVED_SESSION_DIRS = [
+    PROJECT_ROOT / "session_logs",
+    PROJECT_ROOT / "backend" / "session_logs",
+]
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     """Parse boolean env vars like 1/true/yes/on."""
@@ -511,6 +516,10 @@ class SessionManager:
                 provider_keys=effective_provider_keys,
                 local_mode=session_local_mode,
             )
+            # Align persisted trajectory ids with the backend/UI session id.
+            session.session_id = session_id
+            session.owner_user_id = user_id
+            session.execution_mode = "local" if session_local_mode else "sandbox"
             t1 = _time.monotonic()
             logger.info(f"Session initialized in {t1 - t0:.2f}s")
             return tool_router, session
@@ -541,6 +550,160 @@ class SessionManager:
         mode = "local" if session_local_mode else "sandbox"
         logger.info(f"Created session {session_id} for user {user_id} (mode={mode})")
         return session_id
+
+    @staticmethod
+    def _saved_session_time(data: dict[str, Any], path: Path) -> str:
+        return str(
+            data.get("last_save_time")
+            or data.get("session_end_time")
+            or data.get("session_start_time")
+            or datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        )
+
+    @staticmethod
+    def _saved_session_title(data: dict[str, Any]) -> str:
+        title = data.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()[:80]
+        for msg in data.get("messages") or []:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    one_line = " ".join(content.strip().split())
+                    return one_line[:80] + ("…" if len(one_line) > 80 else "")
+        return "Saved session"
+
+    @classmethod
+    def _saved_session_meta(cls, path: Path, data: dict[str, Any]) -> dict[str, Any]:
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        return {
+            "saved_id": path.stem,
+            "path": str(path),
+            "session_id": data.get("session_id") or path.stem,
+            "title": cls._saved_session_title(data),
+            "model": data.get("model_name"),
+            "user_id": data.get("user_id"),
+            "execution_mode": data.get("execution_mode"),
+            "message_count": len(messages),
+            "last_save_time": cls._saved_session_time(data, path),
+            "created_at": data.get("session_start_time"),
+        }
+
+    def _load_saved_session_file(self, saved_id: str) -> tuple[Path, dict[str, Any]]:
+        safe_id = saved_id.strip()
+        if not safe_id or "/" in safe_id or "\\" in safe_id or ".." in safe_id:
+            raise ValueError("Invalid saved session id")
+        candidates: list[Path] = []
+        for directory in SAVED_SESSION_DIRS:
+            candidates.append(directory / f"{safe_id}.json")
+            candidates.extend(directory.glob(f"{safe_id}_*.json"))
+        if safe_id.startswith("session_"):
+            for directory in SAVED_SESSION_DIRS:
+                candidates.extend(directory.glob(f"{safe_id}*.json"))
+        else:
+            for directory in SAVED_SESSION_DIRS:
+                candidates.extend(directory.glob(f"session_{safe_id}_*.json"))
+        existing = [p for p in candidates if p.exists() and p.is_file()]
+        if not existing:
+            raise FileNotFoundError(safe_id)
+        existing.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        path = existing[0]
+        return path, json.loads(path.read_text(encoding="utf-8"))
+
+    def list_saved_sessions(self, user_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """List latest persisted session snapshots from local session_logs/."""
+        latest_by_session: dict[str, tuple[Path, dict[str, Any]]] = {}
+        for directory in SAVED_SESSION_DIRS:
+            if not directory.exists():
+                continue
+            for path in directory.glob("session_*.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                owner = data.get("user_id")
+                if user_id not in (None, "dev") and owner not in (None, user_id, "dev"):
+                    continue
+                sid = str(data.get("session_id") or path.stem)
+                prev = latest_by_session.get(sid)
+                if prev is None or path.stat().st_mtime > prev[0].stat().st_mtime:
+                    latest_by_session[sid] = (path, data)
+
+        items = [self._saved_session_meta(path, data) for path, data in latest_by_session.values()]
+        items.sort(key=lambda item: item.get("last_save_time") or "", reverse=True)
+        return items[: max(1, min(limit, 200))]
+
+    async def save_current_session(self, session_id: str, title: str | None = None) -> dict[str, Any]:
+        """Persist an active session immediately and return saved-session metadata."""
+        agent_session = self.sessions.get(session_id)
+        if not agent_session or not agent_session.is_active:
+            raise ValueError(f"Session {session_id} not found or inactive")
+        if title:
+            agent_session.session.session_title = title.strip()[:120]
+        agent_session.session.owner_user_id = agent_session.user_id
+        agent_session.session.execution_mode = "local" if agent_session.local_mode else "sandbox"
+        path_str = agent_session.session.save_trajectory_local(upload_status="saved")
+        if not path_str:
+            raise RuntimeError("Failed to save session")
+        path = Path(path_str)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return self._saved_session_meta(path, data)
+
+    async def resume_saved_session(
+        self,
+        saved_id: str,
+        *,
+        user_id: str = "dev",
+        hf_token: str | None = None,
+        model: str | None = None,
+        local_mode: bool | None = None,
+        provider_keys: dict[str, str] | None = None,
+        mode: str = "exact",
+    ) -> tuple[str, dict[str, Any]]:
+        """Create a new live session from a persisted local session snapshot."""
+        path, data = self._load_saved_session_file(saved_id)
+        if user_id != "dev":
+            owner = data.get("user_id")
+            if owner not in (None, user_id, "dev"):
+                raise PermissionError("Saved session belongs to another user")
+
+        saved_model = data.get("model_name") if isinstance(data.get("model_name"), str) else None
+        saved_mode = data.get("execution_mode")
+        if local_mode is None and saved_mode in ("local", "sandbox"):
+            local_mode = saved_mode == "local"
+
+        session_id = await self.create_session(
+            user_id=user_id,
+            hf_token=hf_token,
+            model=model or saved_model,
+            local_mode=local_mode,
+            provider_keys=provider_keys,
+        )
+
+        messages = data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return session_id, self._saved_session_meta(path, data)
+
+        if mode == "summary":
+            await self.seed_from_summary(session_id, messages)
+            return session_id, self._saved_session_meta(path, data)
+
+        # Exact resume: keep current system prompt, then append prior non-system messages.
+        from litellm import Message
+
+        agent_session = self.sessions[session_id]
+        restored: list[Message] = []
+        for raw in messages:
+            if not isinstance(raw, dict) or raw.get("role") == "system":
+                continue
+            try:
+                restored.append(Message.model_validate(raw))
+            except Exception as e:
+                logger.warning("Dropping malformed message during exact resume: %s", e)
+        if restored:
+            cm = agent_session.session.context_manager
+            cm.items = [cm.items[0]] + restored
+        return session_id, self._saved_session_meta(path, data)
 
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
         """Rehydrate a session from cached prior messages via summarization.

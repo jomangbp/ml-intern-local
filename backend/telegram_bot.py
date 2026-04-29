@@ -437,7 +437,7 @@ class TelegramBotService:
             "execution_mode": self.execution_mode,
             "turn_timeout_seconds": self.turn_timeout,
             "config_path": str(CONFIG_PATH),
-            "commands": ["/start", "/help", "/commands", "/new", "/status", "/gateway", "/models", "/model <id|number|label>", "/sessions", "/crons", "/cancelcron <id>", "/interrupt", "/cron [minutes] <prompt>"],
+            "commands": ["/start", "/help", "/commands", "/new", "/save", "/sessions", "/resume <id>", "/status", "/gateway", "/models", "/model <id|number|label>", "/crons", "/cancelcron <id>", "/interrupt", "/cron [minutes] <prompt>"],
         }
 
     async def configure(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -516,6 +516,9 @@ class TelegramBotService:
                     {"command": "start", "description": "Show menu"},
                     {"command": "help", "description": "Show menu"},
                     {"command": "new", "description": "New session"},
+                    {"command": "save", "description": "Save current session"},
+                    {"command": "sessions", "description": "List saved sessions"},
+                    {"command": "resume", "description": "Resume saved session: /resume <id>"},
                     {"command": "status", "description": "Session status"},
                     {"command": "models", "description": "Choose model"},
                     {"command": "gateway", "description": "Gateway info"},
@@ -834,6 +837,49 @@ class TelegramBotService:
             await session_manager.delete_session(existing)
         return await self._ensure_session(chat_id)
 
+    async def _send_saved_sessions(self, chat_id: int) -> None:
+        sessions = session_manager.list_saved_sessions(user_id=f"telegram:{chat_id}", limit=10)
+        if not sessions:
+            await self._send_message(chat_id, "No saved sessions yet. Use /save first.")
+            return
+        lines = ["📂 *Saved sessions*", "Use `/resume <id>` to continue:\n"]
+        for item in sessions[:10]:
+            title = str(item.get("title") or "Saved session")[:60]
+            saved_id = item.get("saved_id")
+            when = str(item.get("last_save_time") or "")[:16].replace("T", " ")
+            count = item.get("message_count", 0)
+            lines.append(f"- `{saved_id}` · {count} msgs · {when}")
+            lines.append(f"  _{title}_")
+        await self._send_message(chat_id, "\n".join(lines), parse_mode="Markdown")
+
+    async def _resume_saved_session(self, chat_id: int, saved_id: str) -> None:
+        local_mode = self.execution_mode != "sandbox"
+        user_id = f"telegram:{chat_id}"
+        provider_keys = session_manager.get_effective_provider_keys(user_id)
+        try:
+            session_id, saved = await session_manager.resume_saved_session(
+                saved_id,
+                user_id=user_id,
+                local_mode=local_mode,
+                provider_keys=provider_keys,
+                mode="exact",
+            )
+        except FileNotFoundError:
+            await self._send_message(chat_id, "Saved session not found. Use /sessions.")
+            return
+        except Exception as e:
+            await self._send_message(chat_id, f"❌ Resume failed: {e}")
+            return
+        old = self._sessions.pop(chat_id, None)
+        if old and old != session_id:
+            await session_manager.delete_session(old)
+        self._sessions[chat_id] = session_id
+        await self._send_message(
+            chat_id,
+            f"✅ Resumed `{saved.get('title', 'saved session')}`\nLive session: `{session_id[:8]}...`",
+            parse_mode="Markdown",
+        )
+
     # ── Message routing ───────────────────────────────────────────
 
     async def _handle_update(self, update: dict[str, Any]) -> None:
@@ -936,8 +982,23 @@ class TelegramBotService:
             await self._send_message(chat_id, format_health_telegram(health), parse_mode="Markdown")
             return
 
+        if text == "/save":
+            saved = await session_manager.save_current_session(session_id, title=f"Telegram {chat_id}")
+            await self._send_message(
+                chat_id,
+                f"💾 Saved session `{saved['saved_id']}`\nUse `/resume {saved['saved_id']}` to continue later.",
+                parse_mode="Markdown",
+            )
+            return
         if text == "/sessions":
-            await self._send_message(chat_id, f"Session: `{session_id[:8]}...`", parse_mode="Markdown")
+            await self._send_saved_sessions(chat_id)
+            return
+        if text.startswith("/resume"):
+            parts = text.split(maxsplit=1)
+            if len(parts) != 2:
+                await self._send_saved_sessions(chat_id)
+                return
+            await self._resume_saved_session(chat_id, parts[1].strip())
             return
         if text == "/models":
             await self._send_models_menu(chat_id, session_id)
@@ -1025,6 +1086,10 @@ class TelegramBotService:
                 {"text": "🔌 Gateway", "callback_data": "cmd:gateway"},
             ],
             [
+                {"text": "💾 Save", "callback_data": "cmd:save"},
+                {"text": "📂 Resume", "callback_data": "cmd:sessions"},
+            ],
+            [
                 {"text": "⏰ Crons", "callback_data": "cmd:crons"},
                 {"text": "📂 Sessions", "callback_data": "cmd:sessions"},
             ],
@@ -1041,6 +1106,7 @@ class TelegramBotService:
             "Tap a button or type a command:\n\n"
             "*Quick commands:*\n"
             "/cron 30 check training progress\n"
+            "/save · /sessions · /resume <id>\n"
             "/model gpt-5.5\n"
             "/cancelcron <id>\n\n"
             "Anything else → sent to the agent."
@@ -1451,9 +1517,12 @@ class TelegramBotService:
                     lines.append(f"{status_icon} `{t['task_id'][:12]}` · {cfg.get('interval_minutes')}m · {runs} runs")
                     lines.append(f"   _{prompt_preview}_")
                 await self._send_message(chat_id, "\n".join(lines), parse_mode="Markdown")
-        elif action == "sessions":
+        elif action == "save":
             session_id = await self._ensure_session(chat_id)
-            await self._send_message(chat_id, f"📂 Session: `{session_id[:8]}...`", parse_mode="Markdown")
+            saved = await session_manager.save_current_session(session_id, title=f"Telegram {chat_id}")
+            await self._send_message(chat_id, f"💾 Saved `{saved['saved_id']}`", parse_mode="Markdown")
+        elif action == "sessions":
+            await self._send_saved_sessions(chat_id)
         elif action == "interrupt":
             session_id = await self._ensure_session(chat_id)
             ok = await session_manager.interrupt(session_id)
