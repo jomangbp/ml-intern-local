@@ -153,6 +153,32 @@ export default function SessionSidebar({ onClose }: SessionSidebarProps) {
         </Typography>
       </Box>
 
+      <Box sx={{ px: 1.5, pt: 1.25, pb: 0.75 }}>
+        <Button
+          fullWidth
+          variant="outlined"
+          startIcon={<RestoreIcon sx={{ fontSize: 16 }} />}
+          onClick={() => setRestoreOpen(true)}
+          sx={{
+            justifyContent: 'center',
+            borderColor: 'rgba(255,157,0,0.45)',
+            color: '#FF9D00',
+            fontSize: '0.78rem',
+            fontWeight: 800,
+            textTransform: 'none',
+            borderRadius: '10px',
+            py: 0.85,
+            bgcolor: 'rgba(255,157,0,0.06)',
+            '&:hover': {
+              borderColor: '#FF9D00',
+              bgcolor: 'rgba(255,157,0,0.12)',
+            },
+          }}
+        >
+          Restore Sessions
+        </Button>
+      </Box>
+
       {/* -- Capacity error ------------------------------------------------ */}
       {capacityError && (
         <Alert
