@@ -30,6 +30,7 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import LoginIcon from '@mui/icons-material/Login';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ScheduleIcon from '@mui/icons-material/Schedule';
+import RestoreIcon from '@mui/icons-material/Restore';
 
 import { useSessionStore } from '@/store/sessionStore';
 import { useAgentStore } from '@/store/agentStore';
@@ -39,6 +40,7 @@ import SessionChat from '@/components/SessionChat';
 import CodePanel from '@/components/CodePanel/CodePanel';
 import WelcomeScreen from '@/components/WelcomeScreen/WelcomeScreen';
 import SchedulerDialog from '@/components/SchedulerDialog';
+import SavedSessionsDialog from '@/components/SavedSessionsDialog';
 import JobsPanel from '@/components/JobsPanel';
 import ApprovalInbox from '@/components/ApprovalInbox';
 import { apiFetch } from '@/utils/api';
@@ -98,6 +100,7 @@ export default function AppLayout() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [schedulerOpen, setSchedulerOpen] = useState(false);
+  const [savedSessionsOpen, setSavedSessionsOpen] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [codexConnected, setCodexConnected] = useState(false);
   const [codexMessage, setCodexMessage] = useState('');
@@ -711,6 +714,18 @@ export default function AppLayout() {
                 }}
               />
             </Tooltip>
+            <Tooltip title="Resume saved session">
+              <IconButton
+                onClick={() => setSavedSessionsOpen(true)}
+                size="small"
+                sx={{
+                  color: 'text.secondary',
+                  '&:hover': { color: '#FF9D00' },
+                }}
+              >
+                <RestoreIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="Configure training scheduler / watchdog">
               <IconButton
                 onClick={() => setSchedulerOpen(true)}
@@ -893,6 +908,12 @@ export default function AppLayout() {
         onClose={() => setSchedulerOpen(false)}
         activeExecutionMode={activeExecutionMode}
         activeSessionId={activeSessionId}
+      />
+
+      <SavedSessionsDialog
+        open={savedSessionsOpen}
+        onClose={() => setSavedSessionsOpen(false)}
+        currentSessionId={activeSessionId}
       />
 
       <Dialog open={settingsOpen} onClose={() => setSettingsOpen(false)} maxWidth="sm" fullWidth>
