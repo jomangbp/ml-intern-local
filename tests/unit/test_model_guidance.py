@@ -39,6 +39,35 @@ def test_openai_guidance_matches_model_specific_prompting_advice():
     assert "Treat intermediate updates as non-final" in gpt54
 
 
+def test_non_openai_guidance_aliases_catalog_models():
+    assert canonical_model_id("MiniMaxAI/MiniMax-M2.7") == "minimax-m2.7"
+    assert canonical_model_id("moonshotai/Kimi-K2.6") == "kimi-k2.6"
+    assert canonical_model_id("zai-org/GLM-5.1") == "glm-5.1"
+    assert "MiniMax M2.7" in model_guidance("MiniMaxAI/MiniMax-M2.7")
+    assert "Kimi K2.6" in model_guidance("moonshotai/Kimi-K2.6")
+    assert "GLM-5.1" in model_guidance("zai-org/GLM-5.1")
+
+
+def test_non_openai_guidance_matches_provider_prompting_advice():
+    minimax = model_guidance("MiniMaxAI/MiniMax-M2.7")
+    assert "interleaved reasoning" in minimax
+    assert "limited set of goals" in minimax
+    assert "lightweight state trackers" in minimax
+    assert "context-efficient" in minimax
+
+    kimi = model_guidance("moonshotai/Kimi-K2.6")
+    assert "clear task steps" in kimi
+    assert "delimiters and explicit source boundaries" in kimi
+    assert "summarize or filter stale conversation state" in kimi
+    assert "not over-prescribe exact tool sequences" in kimi
+
+    glm = model_guidance("zai-org/GLM-5.1")
+    assert "long-horizon loops" in glm
+    assert "stepwise execution" in glm
+    assert "experiment-analyze-optimize loop" in glm
+    assert "strategy drift" in glm
+
+
 def test_prompt_manager_builds_profiles_by_mode_and_interface():
     overlay = PromptManager().build_overlay(
         local_mode=True,
