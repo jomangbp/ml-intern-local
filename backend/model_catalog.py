@@ -14,11 +14,6 @@ AVAILABLE_MODELS = [
         "recommended": True,
     },
     {
-        "id": "openai/gpt-5.3",
-        "label": "GPT-5.3",
-        "provider": "openai",
-    },
-    {
         "id": "openai/gpt-5.3-codex",
         "label": "GPT-5.3 Codex",
         "provider": "openai",
@@ -29,18 +24,8 @@ AVAILABLE_MODELS = [
         "provider": "openai",
     },
     {
-        "id": "openai/gpt-5.4-codex",
-        "label": "GPT-5.4 Codex",
-        "provider": "openai",
-    },
-    {
         "id": "openai/gpt-5.5",
         "label": "GPT-5.5",
-        "provider": "openai",
-    },
-    {
-        "id": "openai/gpt-5.5-codex",
-        "label": "GPT-5.5 Codex",
         "provider": "openai",
     },
     {
@@ -79,7 +64,7 @@ def resolve_model_choice(choice: str) -> str | None:
     for model in AVAILABLE_MODELS:
         if lowered in {model["id"].lower(), model["label"].lower()}:
             return model["id"]
-    # Convenience: allow bare GPT slugs like gpt-5.5-codex.
+    # Convenience: allow bare GPT slugs like gpt-5.5.
     for model in AVAILABLE_MODELS:
         if model["id"].lower().endswith("/" + lowered):
             return model["id"]

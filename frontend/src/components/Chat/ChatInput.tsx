@@ -51,11 +51,9 @@ const getHfAvatarUrl = (modelId: string) => {
 const FALLBACK_API_MODELS: ApiModelOption[] = [
   { id: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6', provider: 'anthropic', recommended: true },
   { id: 'MiniMaxAI/MiniMax-M2.7', label: 'MiniMax M2.7', provider: 'minimax', recommended: true },
-  { id: 'openai/gpt-5.3', label: 'GPT-5.3', provider: 'openai' },
+  { id: 'openai/gpt-5.3-codex', label: 'GPT-5.3 Codex', provider: 'openai' },
   { id: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
-  { id: 'openai/gpt-5.4-codex', label: 'GPT-5.4 Codex', provider: 'openai' },
   { id: 'openai/gpt-5.5', label: 'GPT-5.5', provider: 'openai' },
-  { id: 'openai/gpt-5.5-codex', label: 'GPT-5.5 Codex', provider: 'openai' },
   { id: 'moonshotai/Kimi-K2.6', label: 'Kimi K2.6', provider: 'huggingface' },
   { id: 'zai-org/GLM-5.1', label: 'GLM 5.1', provider: 'zai' },
 ];

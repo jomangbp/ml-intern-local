@@ -85,20 +85,22 @@ class Session:
         self.provider_keys: dict[str, str] = provider_keys or {}
         self.tool_router = tool_router
         self.stream = stream
+        self.local_mode = local_mode
+        self.config = config or Config(
+            model_name="anthropic/claude-sonnet-4-5-20250929",
+        )
         tool_specs = tool_router.get_tool_specs_for_llm() if tool_router else []
         self.context_manager = context_manager or ContextManager(
-            model_max_tokens=_get_max_tokens_safe(config.model_name),
+            model_max_tokens=_get_max_tokens_safe(self.config.model_name),
             compact_size=0.1,
             untouched_messages=5,
             tool_specs=tool_specs,
             hf_token=hf_token,
             local_mode=local_mode,
+            model_name=self.config.model_name,
         )
         self.event_queue = event_queue
         self.session_id = str(uuid.uuid4())
-        self.config = config or Config(
-            model_name="anthropic/claude-sonnet-4-5-20250929",
-        )
         self.is_running = True
         self._cancelled = asyncio.Event()
         self.pending_approval: Optional[dict[str, Any]] = None
@@ -156,9 +158,16 @@ class Session:
         return self._cancelled.is_set()
 
     def update_model(self, model_name: str) -> None:
-        """Switch the active model and update the context window limit."""
+        """Switch the active model, context window limit, and model guidance."""
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
+        tool_specs = self.tool_router.get_tool_specs_for_llm() if self.tool_router else None
+        self.context_manager.refresh_system_prompt(
+            tool_specs=tool_specs,
+            hf_token=self.hf_token,
+            local_mode=self.local_mode,
+            model_name=model_name,
+        )
 
     def effective_effort_for(self, model_name: str) -> str | None:
         """Resolve the effort level to actually send for ``model_name``.

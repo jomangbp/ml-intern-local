@@ -15,6 +15,7 @@ from litellm import Message, acompletion
 from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 
 from agent.core.prompt_caching import with_prompt_caching
+from agent.prompts.model_guidance import model_guidance
 
 logger = logging.getLogger(__name__)
 
@@ -159,12 +160,19 @@ class ContextManager:
         prompt_file_suffix: str = "system_prompt_v3.yaml",
         hf_token: str | None = None,
         local_mode: bool = False,
+        model_name: str | None = None,
     ):
+        self.tool_specs = tool_specs or []
+        self.prompt_file_suffix = prompt_file_suffix
+        self.hf_token = hf_token
+        self.local_mode = local_mode
+        self.model_name = model_name
         self.system_prompt = self._load_system_prompt(
-            tool_specs or [],
-            prompt_file_suffix="system_prompt_v3.yaml",
+            self.tool_specs,
+            prompt_file_suffix=prompt_file_suffix,
             hf_token=hf_token,
             local_mode=local_mode,
+            model_name=model_name,
         )
         # The model's real input-token ceiling (from litellm.get_model_info).
         # Compaction triggers at _COMPACT_THRESHOLD_RATIO below it — see
@@ -184,6 +192,7 @@ class ContextManager:
         prompt_file_suffix: str = "system_prompt.yaml",
         hf_token: str | None = None,
         local_mode: bool = False,
+        model_name: str | None = None,
     ):
         """Load and render the system prompt from YAML file with Jinja2"""
         prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
@@ -230,12 +239,43 @@ class ContextManager:
             )
             static_prompt += local_context
 
+        guidance = model_guidance(model_name)
+        if guidance:
+            static_prompt += "\n\n" + guidance
+
         return (
             f"{static_prompt}\n\n"
             f"[Session context: Date={current_date}, Time={current_time}, "
             f"Timezone={current_timezone}, User={hf_user_info}, "
             f"Tools={len(tool_specs)}]"
         )
+
+    def refresh_system_prompt(
+        self,
+        *,
+        tool_specs: list[dict[str, Any]] | None = None,
+        hf_token: str | None = None,
+        local_mode: bool | None = None,
+        model_name: str | None = None,
+    ) -> None:
+        """Re-render the system prompt after model/tool/mode changes."""
+        if tool_specs is not None:
+            self.tool_specs = tool_specs
+        if hf_token is not None:
+            self.hf_token = hf_token
+        if local_mode is not None:
+            self.local_mode = local_mode
+        if model_name is not None:
+            self.model_name = model_name
+        self.system_prompt = self._load_system_prompt(
+            self.tool_specs,
+            prompt_file_suffix=self.prompt_file_suffix,
+            hf_token=self.hf_token,
+            local_mode=self.local_mode,
+            model_name=self.model_name,
+        )
+        if self.items:
+            self.items[0].content = self.system_prompt
 
     def add_message(self, message: Message, token_count: int = None) -> None:
         """Add a message to the history"""

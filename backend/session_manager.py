@@ -937,20 +937,18 @@ class SessionManager:
         agent_session.local_mode = bool(local_mode)
         agent_session.tool_router.set_local_mode(bool(local_mode))
         agent_session.session.tool_router = agent_session.tool_router
+        agent_session.session.local_mode = bool(local_mode)
         agent_session.session.execution_mode = "local" if local_mode else "sandbox"
 
-        # Refresh system prompt so the model knows whether it has local tools or sandbox tools.
-        cm = agent_session.session.context_manager
+        # Refresh system prompt so the model knows whether it has local tools,
+        # sandbox tools, and the current model-specific guidance.
         tool_specs = agent_session.tool_router.get_tool_specs_for_llm()
-        cm.tool_specs = tool_specs
-        cm.system_prompt = cm._load_system_prompt(
-            tool_specs,
-            prompt_file_suffix="system_prompt_v3.yaml",
+        agent_session.session.context_manager.refresh_system_prompt(
+            tool_specs=tool_specs,
             hf_token=agent_session.hf_token,
             local_mode=bool(local_mode),
+            model_name=agent_session.session.config.model_name,
         )
-        if cm.items:
-            cm.items[0].content = cm.system_prompt
 
         mode = "local" if local_mode else "sandbox"
         logger.info("Switched session %s execution mode to %s", session_id, mode)
