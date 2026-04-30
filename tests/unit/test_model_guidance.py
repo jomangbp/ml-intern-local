@@ -25,6 +25,20 @@ def test_model_guidance_aliases_legacy_openai_names():
     assert "GPT-5.5" in model_guidance("openai/gpt-5.5")
 
 
+def test_openai_guidance_matches_model_specific_prompting_advice():
+    codex = model_guidance("openai/gpt-5.3-codex")
+    assert "avoid unnecessary upfront narration" in codex
+    assert "Avoid upfront plans, preambles" in codex
+    assert "autonomous senior-engineer" in codex
+    assert "smallest meaningful validation" in codex
+
+    gpt54 = model_guidance("openai/gpt-5.4")
+    assert "explicit contracts" in gpt54
+    assert "dependency-aware tool flow" in gpt54
+    assert "Keep outputs compact and structured" in gpt54
+    assert "Treat intermediate updates as non-final" in gpt54
+
+
 def test_prompt_manager_builds_profiles_by_mode_and_interface():
     overlay = PromptManager().build_overlay(
         local_mode=True,
