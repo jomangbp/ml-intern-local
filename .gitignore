@@ -23,8 +23,16 @@ env/
 .env.local
 .env.*
 !.env.example
+.envrc
 *.local
 credentials*.json
+*credentials*.json
+*secrets*.json
+*token*.json
+*.pem
+*.key
+*.p12
+*.pfx
 
 # OS-specific
 .DS_Store
@@ -55,34 +63,55 @@ frontend/yarn-error.log*
 # Eval (stale)
 eval/
 
-# Project-specific
+# Project-specific local state
 session_logs/
+backend/session_logs/
 /logs
+logs/
 hf-agent-leaderboard/
 skills/
 .claude/
+.codex/
+.ml-intern/
 *.jsonl
 *.csv
+*.log
 
-# ML / Data
+# Local experiments / generated research artifacts
+experiments/
+outputs/
+research/
+artifacts/
+reports/generated/
+
+# ML / Data / model artifacts
 data/
 datasets/
 models/
+checkpoints/
 checkpoint-*/
 runs/
 wandb/
+mlruns/
 backend/hybrid-slm/outputs/
 backend/hybrid-slm/data/
 training.log
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.gguf
+*.bin
+*.npy
+*.npz
+*.parquet
+*.arrow
+*.sqlite
+*.sqlite3
+*.db
 
-# Local app state (outside repository code)
-.ml-intern/
-
-# Frontend build cache
+# Frontend build cache / generated static assets
 frontend/tsconfig.tsbuildinfo
 static/assets/index-*.js
-.env
-session_logs/
-backend/session_logs/
-*.log
 static/
