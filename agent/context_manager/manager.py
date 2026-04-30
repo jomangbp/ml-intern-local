@@ -15,7 +15,7 @@ from litellm import Message, acompletion
 from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 
 from agent.core.prompt_caching import with_prompt_caching
-from agent.prompts.model_guidance import model_guidance
+from agent.prompts.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -161,18 +161,24 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool = False,
         model_name: str | None = None,
+        interface: str | None = None,
+        task_type: str | None = None,
     ):
         self.tool_specs = tool_specs or []
         self.prompt_file_suffix = prompt_file_suffix
         self.hf_token = hf_token
         self.local_mode = local_mode
         self.model_name = model_name
+        self.interface = interface
+        self.task_type = task_type
         self.system_prompt = self._load_system_prompt(
             self.tool_specs,
             prompt_file_suffix=prompt_file_suffix,
             hf_token=hf_token,
             local_mode=local_mode,
             model_name=model_name,
+            interface=interface,
+            task_type=task_type,
         )
         # The model's real input-token ceiling (from litellm.get_model_info).
         # Compaction triggers at _COMPACT_THRESHOLD_RATIO below it — see
@@ -193,6 +199,8 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool = False,
         model_name: str | None = None,
+        interface: str | None = None,
+        task_type: str | None = None,
     ):
         """Load and render the system prompt from YAML file with Jinja2"""
         prompt_file = Path(__file__).parent.parent / "prompts" / f"{prompt_file_suffix}"
@@ -239,9 +247,14 @@ class ContextManager:
             )
             static_prompt += local_context
 
-        guidance = model_guidance(model_name)
-        if guidance:
-            static_prompt += "\n\n" + guidance
+        profile_overlay = PromptManager().build_overlay(
+            local_mode=local_mode,
+            interface=interface,
+            task_type=task_type,
+            model_name=model_name,
+        )
+        if profile_overlay:
+            static_prompt += "\n\n" + profile_overlay
 
         return (
             f"{static_prompt}\n\n"
@@ -257,6 +270,8 @@ class ContextManager:
         hf_token: str | None = None,
         local_mode: bool | None = None,
         model_name: str | None = None,
+        interface: str | None = None,
+        task_type: str | None = None,
     ) -> None:
         """Re-render the system prompt after model/tool/mode changes."""
         if tool_specs is not None:
@@ -267,12 +282,18 @@ class ContextManager:
             self.local_mode = local_mode
         if model_name is not None:
             self.model_name = model_name
+        if interface is not None:
+            self.interface = interface
+        if task_type is not None:
+            self.task_type = task_type
         self.system_prompt = self._load_system_prompt(
             self.tool_specs,
             prompt_file_suffix=self.prompt_file_suffix,
             hf_token=self.hf_token,
             local_mode=self.local_mode,
             model_name=self.model_name,
+            interface=self.interface,
+            task_type=self.task_type,
         )
         if self.items:
             self.items[0].content = self.system_prompt

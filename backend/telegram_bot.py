@@ -826,7 +826,10 @@ class TelegramBotService:
         user_id = f"telegram:{chat_id}"
         provider_keys = session_manager.get_effective_provider_keys(user_id)
         session_id = await session_manager.create_session(
-            user_id=user_id, local_mode=local_mode, provider_keys=provider_keys,
+            user_id=user_id,
+            local_mode=local_mode,
+            provider_keys=provider_keys,
+            prompt_interface="telegram",
         )
         self._sessions[chat_id] = session_id
         return session_id
@@ -862,6 +865,7 @@ class TelegramBotService:
                 local_mode=None,
                 provider_keys=provider_keys,
                 mode="exact",
+                prompt_interface="telegram",
             )
         except FileNotFoundError:
             await self._send_message(chat_id, "Saved session not found. Use /sessions.")

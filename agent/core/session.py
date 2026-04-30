@@ -80,12 +80,16 @@ class Session:
         provider_keys: dict[str, str] | None = None,
         local_mode: bool = False,
         stream: bool = True,
+        prompt_interface: str | None = None,
+        task_type: str | None = None,
     ):
         self.hf_token: Optional[str] = hf_token
         self.provider_keys: dict[str, str] = provider_keys or {}
         self.tool_router = tool_router
         self.stream = stream
         self.local_mode = local_mode
+        self.prompt_interface = prompt_interface
+        self.task_type = task_type
         self.config = config or Config(
             model_name="anthropic/claude-sonnet-4-5-20250929",
         )
@@ -98,6 +102,8 @@ class Session:
             hf_token=hf_token,
             local_mode=local_mode,
             model_name=self.config.model_name,
+            interface=prompt_interface,
+            task_type=task_type,
         )
         self.event_queue = event_queue
         self.session_id = str(uuid.uuid4())
@@ -167,6 +173,8 @@ class Session:
             hf_token=self.hf_token,
             local_mode=self.local_mode,
             model_name=model_name,
+            interface=self.prompt_interface,
+            task_type=self.task_type,
         )
 
     def effective_effort_for(self, model_name: str) -> str | None:

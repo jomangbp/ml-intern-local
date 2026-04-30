@@ -91,6 +91,7 @@ class AgentSession:
     hf_token: str | None = None  # User's HF OAuth token for tool execution
     provider_keys: dict[str, str] = field(default_factory=dict)  # per-user provider API keys
     local_mode: bool = False  # True => local filesystem/bash tools (no sandbox)
+    prompt_interface: str = "webui"
     task: asyncio.Task | None = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     is_active: bool = True
@@ -440,6 +441,8 @@ class SessionManager:
         model: str | None = None,
         local_mode: bool | None = None,
         provider_keys: dict[str, str] | None = None,
+        prompt_interface: str = "webui",
+        task_type: str | None = None,
     ) -> str:
         """Create a new agent session and return its ID.
 
@@ -515,6 +518,8 @@ class SessionManager:
                 hf_token=hf_token,
                 provider_keys=effective_provider_keys,
                 local_mode=session_local_mode,
+                prompt_interface=prompt_interface,
+                task_type=task_type,
             )
             # Align persisted trajectory ids with the backend/UI session id.
             session.session_id = session_id
@@ -536,6 +541,7 @@ class SessionManager:
             hf_token=hf_token,
             provider_keys=effective_provider_keys,
             local_mode=session_local_mode,
+            prompt_interface=prompt_interface,
         )
 
         async with self._lock:
@@ -718,6 +724,7 @@ class SessionManager:
         local_mode: bool | None = None,
         provider_keys: dict[str, str] | None = None,
         mode: str = "exact",
+        prompt_interface: str = "webui",
     ) -> tuple[str, dict[str, Any]]:
         """Create a new live session from a persisted local session snapshot."""
         path, data = self._load_saved_session_file(saved_id)
@@ -737,6 +744,7 @@ class SessionManager:
             model=model or saved_model,
             local_mode=local_mode,
             provider_keys=provider_keys,
+            prompt_interface=prompt_interface,
         )
 
         messages = data.get("messages")
@@ -948,6 +956,8 @@ class SessionManager:
             hf_token=agent_session.hf_token,
             local_mode=bool(local_mode),
             model_name=agent_session.session.config.model_name,
+            interface=agent_session.prompt_interface,
+            task_type=agent_session.session.task_type,
         )
 
         mode = "local" if local_mode else "sandbox"

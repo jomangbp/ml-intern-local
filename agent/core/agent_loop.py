@@ -1461,6 +1461,7 @@ async def submission_loop(
     hf_token: str | None = None,
     local_mode: bool = False,
     stream: bool = True,
+    prompt_interface: str = "cli",
 ) -> None:
     """
     Main agent loop - processes submissions and dispatches to handlers.
@@ -1470,7 +1471,7 @@ async def submission_loop(
     # Create session with tool router
     session = Session(
         event_queue, config=config, tool_router=tool_router, hf_token=hf_token,
-        local_mode=local_mode, stream=stream,
+        local_mode=local_mode, stream=stream, prompt_interface=prompt_interface,
     )
     if session_holder is not None:
         session_holder[0] = session

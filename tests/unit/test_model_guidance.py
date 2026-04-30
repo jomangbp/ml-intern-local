@@ -1,6 +1,7 @@
 from backend.model_catalog import AVAILABLE_MODELS, resolve_model_choice
 from agent.context_manager.manager import ContextManager
 from agent.prompts.model_guidance import canonical_model_id, model_guidance
+from agent.prompts.prompt_manager import PromptManager
 
 
 def test_openai_catalog_keeps_only_requested_gpt_models():
@@ -24,10 +25,24 @@ def test_model_guidance_aliases_legacy_openai_names():
     assert "GPT-5.5" in model_guidance("openai/gpt-5.5")
 
 
+def test_prompt_manager_builds_profiles_by_mode_and_interface():
+    overlay = PromptManager().build_overlay(
+        local_mode=True,
+        interface="telegram",
+        model_name="openai/gpt-5.5",
+    )
+    assert "# ML Intern Local identity" in overlay
+    assert "# Local execution profile" in overlay
+    assert "# Telegram interface style" in overlay
+    assert "Default verbosity for this interface: low" in overlay
+    assert "# Model guidance: GPT-5.5" in overlay
+
+
 def test_context_manager_appends_model_guidance_and_refreshes():
-    cm = ContextManager(tool_specs=[], hf_token=None, local_mode=True, model_name="openai/gpt-5.4")
+    cm = ContextManager(tool_specs=[], hf_token=None, local_mode=True, model_name="openai/gpt-5.4", interface="webui")
     assert "# Model guidance: GPT-5.4" in cm.system_prompt
-    assert "# CLI / Local mode" in cm.system_prompt
+    assert "# Local execution profile" in cm.system_prompt
+    assert "# Web UI interface style" in cm.system_prompt
 
     cm.refresh_system_prompt(model_name="openai/gpt-5.5")
     assert "# Model guidance: GPT-5.5" in cm.items[0].content
