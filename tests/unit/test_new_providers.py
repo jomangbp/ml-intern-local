@@ -146,12 +146,14 @@ def test_resolve_model_choice_includes_xiaomi():
 # ---------------------------------------------------------------------------
 
 def test_ollama_routing_via_llm_params():
-    """Ollama models route through the local provider registry to localhost."""
+    """Ollama models route through litellm's native ollama/ provider."""
     from agent.core.llm_params import _resolve_llm_params
 
     params = _resolve_llm_params("ollama/qwen3.5:4b")
-    assert params["model"] == "openai/qwen3.5:4b"
+    assert params["model"] == "ollama/qwen3.5:4b"
+    # Native ollama provider uses /api/chat, not /v1 — no /v1 suffix
     assert "localhost:11434" in params.get("api_base", "")
+    assert "/v1" not in params.get("api_base", "")
     # No API key needed for local Ollama (no auth by default)
     assert params.get("api_key") is None or params.get("api_key") == ""
 

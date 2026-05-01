@@ -31,7 +31,9 @@ class LocalProvider:
 _LOCAL_PROVIDER_REGISTRY: dict[str, LocalProvider] = {
     # Ollama: runs locally at localhost:11434, no API key needed by default.
     # Use the model name as it appears in `ollama list`, e.g. "ollama/llama3.2".
-    "ollama": LocalProvider(api_base="http://localhost:11434/v1", api_key=None),
+    # NOTE: litellm's native ollama/ provider calls /api/chat directly (not
+    # /v1/chat/completions), so api_base must NOT include /v1.
+    "ollama": LocalProvider(api_base=os.environ.get("OLLAMA_HOST", "http://localhost:11434"), api_key=None),
 
     # LM Studio: OpenAI-compatible server on localhost.
     "lmstudio": LocalProvider(api_base="http://localhost:1234/v1", api_key="not-needed"),
@@ -416,6 +418,18 @@ def _resolve_llm_params(
         if model_name.lower().startswith(prefix + "/"):
             # Strip the prefix; what remains is the model name the server expects
             bare_model = model_name[len(prefix) + 1:]
+
+            # Ollama uses litellm's native ollama/ provider which calls
+            # /api/chat directly — the OpenAI-compatible /v1/chat/completions
+            # endpoint hangs or returns empty content for thinking models.
+            if prefix == "ollama":
+                params: dict = {
+                    "model": f"ollama/{bare_model}",
+                    "api_base": provider.api_base,
+                }
+                # No API key needed — local Ollama is unauthenticated.
+                return params
+
             model_prefix = "anthropic" if provider.protocol == "anthropic" else "openai"
             params: dict = {
                 "model": f"{model_prefix}/{bare_model}",
