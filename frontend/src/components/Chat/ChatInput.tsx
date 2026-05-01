@@ -32,6 +32,8 @@ const PROVIDER_LABEL: Record<string, string> = {
   openai: 'OpenAI',
   minimax: 'MiniMax',
   zai: 'ZAI',
+  xiaomi: 'Xiaomi',
+  ollama: 'Ollama',
   huggingface: 'Hugging Face Router',
 };
 
@@ -40,6 +42,8 @@ const PROVIDER_AVATAR: Record<string, string> = {
   openai: 'https://huggingface.co/api/avatars/openai',
   minimax: 'https://huggingface.co/api/avatars/MiniMaxAI',
   zai: 'https://huggingface.co/api/avatars/zai-org',
+  xiaomi: 'https://huggingface.co/api/avatars/Xiaomi',
+  ollama: 'https://ollama.com/public/ollama.png',
   huggingface: 'https://huggingface.co/front/assets/huggingface_logo-noborder.svg',
 };
 
@@ -55,7 +59,11 @@ const FALLBACK_API_MODELS: ApiModelOption[] = [
   { id: 'openai/gpt-5.4', label: 'GPT-5.4', provider: 'openai' },
   { id: 'openai/gpt-5.5', label: 'GPT-5.5', provider: 'openai' },
   { id: 'moonshotai/Kimi-K2.6', label: 'Kimi K2.6', provider: 'huggingface' },
-  { id: 'zai-org/GLM-5.1', label: 'GLM 5.1', provider: 'zai' },
+  { id: 'xiaomi/MiMo', label: 'Xiaomi MiMo', provider: 'xiaomi' },
+  { id: 'ollama/deepseek-v4-pro:cloud', label: '☁️ DeepSeek V4 Pro', provider: 'ollama' },
+  { id: 'ollama/glm-5.1:cloud', label: '☁️ GLM 5.1 (Ollama)', provider: 'ollama' },
+  { id: 'ollama/qwen3.5:4b', label: '🖥️ Qwen 3.5 (4B)', provider: 'ollama' },
+  { id: 'ollama/qwen3.5:9b', label: '🖥️ Qwen 3.5 (9B)', provider: 'ollama' },
 ];
 
 const apiModelToOption = (m: ApiModelOption): ModelOption => {

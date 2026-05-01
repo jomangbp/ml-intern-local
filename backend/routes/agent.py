@@ -37,7 +37,7 @@ from agent.core.codex_responses import codex_responses_completion, is_codex_resp
 from agent.core.hf_access import get_jobs_access
 from agent.core.llm_params import _resolve_llm_params
 from prompt_cron import prompt_cron_manager
-from model_catalog import AVAILABLE_MODELS
+from model_catalog import get_all_models, scan_ollama
 
 logger = logging.getLogger(__name__)
 
@@ -351,8 +351,28 @@ async def get_model() -> dict:
     """Get current model and available models. No auth required."""
     return {
         "current": session_manager.config.model_name,
-        "available": AVAILABLE_MODELS,
+        "available": get_all_models(),
     }
+
+
+@router.get("/providers/ollama/models")
+async def get_ollama_models() -> dict:
+    """Return the list of models available on the user's local Ollama instance.
+
+    No auth required — this endpoint queries the local Ollama API at
+    ``OLLAMA_HOST`` (default http://localhost:11434) and returns whatever
+    models are pulled. Returns an empty list when Ollama is not running.
+
+    The response can be force-refreshed via ``POST /api/providers/ollama/scan``.
+    """
+    return {"models": get_all_models(force_ollama_scan=False)}
+
+
+@router.post("/providers/ollama/scan")
+async def scan_ollama_models_endpoint() -> dict:
+    """Force a fresh scan of the local Ollama instance and return updated
+    model list."""
+    return {"models": scan_ollama()}
 
 
 _TITLE_STRIP_CHARS = str.maketrans("", "", "`*_~#[]()")
@@ -460,7 +480,7 @@ async def create_session(
     if isinstance(body, dict):
         model = body.get("model")
 
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    valid_ids = {m["id"] for m in get_all_models()}
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
@@ -514,7 +534,7 @@ async def restore_session_summary(
     provider_keys = session_manager.get_effective_provider_keys(user["user_id"])
 
     model = body.get("model")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    valid_ids = {m["id"] for m in get_all_models()}
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
@@ -630,7 +650,7 @@ async def resume_saved_session(
         raise HTTPException(status_code=400, detail="mode must be 'exact' or 'summary'")
     execution_mode = _parse_execution_mode(payload.get("execution_mode"))
     model = payload.get("model")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    valid_ids = {m["id"] for m in get_all_models()}
     if model and model not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
     resolved_model = model or session_manager.config.model_name
@@ -707,7 +727,7 @@ async def set_session_model(
     model_id = body.get("model")
     if not model_id:
         raise HTTPException(status_code=400, detail="Missing 'model' field")
-    valid_ids = {m["id"] for m in AVAILABLE_MODELS}
+    valid_ids = {m["id"] for m in get_all_models()}
     if model_id not in valid_ids:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
     await _require_hf_for_anthropic(request, model_id)

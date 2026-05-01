@@ -251,6 +251,8 @@ class SessionManager:
                     out["minimax"] = value
                 elif key == "ZAI_API_KEY" and value:
                     out["zai"] = value
+                elif key == "MIMO_API_KEY" and value:
+                    out["xiaomi"] = value
         except Exception as e:
             logger.warning("Failed reading provider .env for user %s at %s: %s", user_id, path, e)
             return {}
@@ -272,6 +274,8 @@ class SessionManager:
                 lines.append(f"MINIMAX_API_KEY={self._format_env_value(keys['minimax'])}")
             if keys.get("zai"):
                 lines.append(f"ZAI_API_KEY={self._format_env_value(keys['zai'])}")
+            if keys.get("xiaomi"):
+                lines.append(f"MIMO_API_KEY={self._format_env_value(keys['xiaomi'])}")
 
             content = "\n".join(lines) + "\n"
 
@@ -309,7 +313,7 @@ class SessionManager:
                 existing_lines = repo_env.read_text(encoding="utf-8").splitlines()
 
             # Build updated .env: keep non-provider lines, replace/add provider lines
-            provider_vars = {"MINIMAX_API_KEY", "ZAI_API_KEY"}
+            provider_vars = {"MINIMAX_API_KEY", "ZAI_API_KEY", "MIMO_API_KEY"}
             kept: list[str] = []
             for line in existing_lines:
                 stripped = line.strip()
@@ -325,6 +329,8 @@ class SessionManager:
                 kept.append(f"MINIMAX_API_KEY={keys['minimax']}")
             if keys.get("zai"):
                 kept.append(f"ZAI_API_KEY={keys['zai']}")
+            if keys.get("xiaomi"):
+                kept.append(f"MIMO_API_KEY={keys['xiaomi']}")
 
             content = "\n".join(kept) + "\n"
             tmp = repo_env.with_suffix(".env.tmp")
@@ -341,6 +347,8 @@ class SessionManager:
                 os.environ["MINIMAX_API_KEY"] = keys["minimax"]
             if keys.get("zai"):
                 os.environ["ZAI_API_KEY"] = keys["zai"]
+            if keys.get("xiaomi"):
+                os.environ["MIMO_API_KEY"] = keys["xiaomi"]
 
             logger.info("Provider keys saved to %s", repo_env)
         except Exception as e:
@@ -396,7 +404,7 @@ class SessionManager:
 
         Priority:
           1) user-scoped keys set via /auth/providers/tokens (.env in user workspace)
-          2) process env (MINIMAX_API_KEY / ZAI_API_KEY)
+          2) process env (MINIMAX_API_KEY / ZAI_API_KEY / MIMO_API_KEY)
         """
         keys = self.get_user_provider_keys(user_id)
         if not keys.get("minimax"):
@@ -407,6 +415,10 @@ class SessionManager:
             env_zai = (os.environ.get("ZAI_API_KEY") or "").strip()
             if env_zai:
                 keys["zai"] = env_zai
+        if not keys.get("xiaomi"):
+            env_mimo = (os.environ.get("MIMO_API_KEY") or "").strip()
+            if env_mimo:
+                keys["xiaomi"] = env_mimo
         return keys
 
     def set_user_provider_keys(self, user_id: str, keys: dict[str, str] | None) -> dict[str, str]:

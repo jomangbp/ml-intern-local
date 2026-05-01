@@ -54,6 +54,14 @@ _LOCAL_PROVIDER_REGISTRY: dict[str, LocalProvider] = {
         api_key=os.environ.get("ZAI_API_KEY"),
         protocol="openai",
     ),
+
+    # Xiaomi MiMo: OpenAI-compatible endpoint (set MIMO_API_KEY env var).
+    # Override with MIMO_API_BASE if needed.
+    "xiaomi": LocalProvider(
+        api_base=os.environ.get("MIMO_API_BASE", "https://api.mimo.xiaomi.com/v1"),
+        api_key=os.environ.get("MIMO_API_KEY"),
+        protocol="openai",
+    ),
 }
 
 # Merge any user-supplied providers from the environment
@@ -87,6 +95,7 @@ _PROVIDER_OVERRIDES: dict[str, tuple[str, str]] = {
 _PROVIDER_KEY_ENV: dict[str, str] = {
     "minimax": "MINIMAX_API_KEY",
     "zai": "ZAI_API_KEY",
+    "xiaomi": "MIMO_API_KEY",
 }
 
 
