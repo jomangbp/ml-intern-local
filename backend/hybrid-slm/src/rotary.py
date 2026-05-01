@@ -147,9 +147,8 @@ class RotaryEmbedding(nn.Module):
         """
         seq_len = q.shape[2]
         
-        # Recompute or retrieve from cache
-        if seq_len > self._seq_len_cached:
-            # Need to recompute
+        # Always check cache matches current seq_len (handle generation with varying lengths)
+        if seq_len != self._seq_len_cached or self._cos_cached is None:
             self._seq_len_cached = seq_len
             t = torch.arange(seq_len, device=self.freqs.device, dtype=self.freqs.dtype)
             freqs = torch.outer(t, self.freqs[0]) if self.freqs.dim() == 1 else self.freqs[:seq_len]
