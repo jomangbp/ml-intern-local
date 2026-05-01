@@ -31,7 +31,8 @@
 - **Python 3.11+**
 - **Node.js 18+** (for frontend)
 - **[uv](https://docs.astral.sh/uv/)** — fast Python package manager
-- A **provider API key** (at least one): Anthropic, OpenAI, MiniMax, or Z.ai
+- A **provider API key** (at least one): Anthropic, OpenAI, MiniMax, Z.ai, or Xiaomi
+- **Ollama** (optional) — enables proxied cloud models (Claude, DeepSeek, Qwen, Kimi, GLM) via local Ollama gateway
 
 ### 1. Clone & Install
 
@@ -71,7 +72,13 @@ MINIMAX_API_KEY=...
 
 # Z.ai dev platform — https://docs.z.ai
 ZAI_API_KEY=...
+
+# Xiaomi MiMo — https://mimo.xiaomi.com
+MIMO_API_KEY=...
 ```
+
+> **Note:** `MIMO_API_BASE` defaults to `https://api.mimo.xiaomi.com/v1`.
+> Override it in `.env` if your MiMo instance is hosted elsewhere.
 
 ### OpenAI via Codex Subscription (free setup, no API key)
 
@@ -182,6 +189,39 @@ The Telegram bot starts automatically when the backend launches if `TELEGRAM_BOT
 | MiniMax M2.7 | MiniMax | `MINIMAX_API_KEY` |
 | GLM 5.1 | Z.ai | `ZAI_API_KEY` |
 | Kimi K2.6 | HuggingFace | `HF_TOKEN` |
+| Xiaomi MiMo | Xiaomi | `MIMO_API_KEY` |
+| Ollama cloud models | Ollama | None (local proxy) |
+
+### Ollama (optional — local gateway to cloud models)
+
+ML Intern scans your local Ollama instance for available models at startup.
+The Ollama gateway can proxy requests to cloud models (Claude, DeepSeek, Qwen,
+Kimi, GLM, MiniMax) — no API key needed for the proxy layer itself.
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a proxied cloud model (example: DeepSeek V4 Flash)
+ollama pull deepseek-v4-flash:cloud
+
+# ML Intern auto-discovers it at runtime (no config needed)
+```
+
+> **Tip:** Ollama models appear automatically in the model selector after scanning.
+> You can force a re-scan with `POST /api/providers/ollama/scan`.
+
+### Xiaomi MiMo
+
+Access Xiaomi's MiMo model through an OpenAI-compatible API:
+
+```ini
+# Required in .env
+MIMO_API_KEY=your_mimo_key
+
+# Optional override (default: https://api.mimo.xiaomi.com/v1)
+MIMO_API_BASE=https://your-custom-mimo-endpoint/v1
+```
 
 > **OpenAI note:** GPT models use your ChatGPT Pro/Plus subscription via the
 > Codex CLI. Run `codex login --device-auth` once — no `OPENAI_API_KEY` needed.
@@ -211,12 +251,12 @@ Switch models on-the-fly via Telegram (`/models`) or the Web UI model selector.
         │   iterations) │
         └───────┬───────┘
                 │
-    ┌───────────┼───────────┐
-    │           │           │
-┌───▼──┐  ┌────▼────┐  ┌───▼──────┐
-│ HF   │  │ Local   │  │ Research │
-│ Tools│  │ Tools   │  │ Tools    │
-└──────┘  └─────────┘  └──────────┘
+        ┌──────────────┬──────────────┬──────────────┐
+        │              │              │              │
+    ┌───▼──┐      ┌───▼───┐     ┌───▼───┐     ┌───▼──────┐
+    │  HF  │      │ Local │     │ Ollama│     │ Xiaomi   │
+    │ Tools│      │ Tools │     │ Proxy │     │ MiMo API │
+    └──────┘      └───────┘     └───────┘     └──────────┘
 ```
 
 ### Key Components
@@ -392,7 +432,13 @@ npm run build   # production build → static/
 
 ### Adding a New Model
 
-Edit `backend/model_catalog.py`:
+Models are served from two sources:
+
+1. **Static models** — defined in `backend/model_catalog.py` under `AVAILABLE_MODELS`.
+2. **Dynamic models** — Ollama models are auto-discovered via `GET /api/tags` at
+   `http://localhost:11434` (cached for 30 seconds).
+
+To add a static model, edit `backend/model_catalog.py`:
 
 ```python
 AVAILABLE_MODELS.append({
@@ -401,6 +447,15 @@ AVAILABLE_MODELS.append({
     "provider": "provider_key",
 })
 ```
+
+### Adding a New Provider
+
+Each provider needs three things:
+
+1. **Model catalog entry** — register the model in `backend/model_catalog.py`.
+2. **LLM params routing** — add provider routing in `agent/core/llm_params.py`
+   under `_LOCAL_PROVIDER_REGISTRY` (or `_PROVIDER_OVERRIDES` for HF router–style ids).
+3. **Model guidance** — per-model prompt overlays in `agent/prompts/model_guidance.py`.
 
 ### Adding a New Tool
 
