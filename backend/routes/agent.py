@@ -590,6 +590,52 @@ async def restore_session_summary(
     return SessionResponse(session_id=session_id, ready=True)
 
 
+@router.post("/session/restore-exact", response_model=SessionResponse)
+async def restore_session_exact(
+    request: Request, body: dict, user: dict = Depends(get_current_user)
+) -> SessionResponse:
+    """Create a new session with the caller's prior messages restored
+    verbatim (no summarisation). Like restore-summary but preserves the
+    full conversation history instead of condensing it."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=400, detail="Missing 'messages' array")
+
+    hf_token = _hf_token_from_request(request)
+    execution_mode = _parse_execution_mode(body.get("execution_mode"))
+    provider_keys = session_manager.get_effective_provider_keys(user["user_id"])
+
+    model = body.get("model")
+    valid_ids = {m["id"] for m in get_all_models()}
+    if model and model not in valid_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+
+    resolved_model = model or session_manager.config.model_name
+    await _require_hf_for_anthropic(request, resolved_model)
+
+    try:
+        session_id = await session_manager.create_session(
+            user_id=user["user_id"],
+            hf_token=hf_token,
+            model=model,
+            local_mode=execution_mode,
+            provider_keys=provider_keys,
+        )
+    except SessionCapacityError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    try:
+        count = await session_manager.restore_exact(session_id, messages)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    logger.info(
+        f"Restored session {session_id} for {user.get('username', 'unknown')} "
+        f"(exact restore of {count} messages)"
+    )
+    return SessionResponse(session_id=session_id, ready=True)
+
+
 @router.get("/saved-sessions")
 async def list_saved_sessions(
     limit: int = 50,

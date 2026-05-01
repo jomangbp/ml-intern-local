@@ -1,7 +1,7 @@
 /**
  * Shown inline in a chat when the backend no longer recognizes the
- * session id (typically: Space was restarted). Lets the user catch the
- * agent up with a summary of the prior conversation, or start over.
+ * session id (typically: gateway restarted). Lets the user restore
+ * the full prior conversation into a new session, or start over.
  */
 import { useState, useCallback } from 'react';
 import { Box, Button, CircularProgress, Typography } from '@mui/material';
@@ -35,19 +35,19 @@ export default function ExpiredBanner({ sessionId }: Props) {
         if (uiMsgs.length > 0) messages = uiMessagesToLLMMessages(uiMsgs);
       }
       if (!messages || messages.length === 0) {
-        setError('Nothing to summarize from this chat.');
+        setError('Nothing to restore from this chat.');
         setBusy(null);
         return;
       }
 
-      const res = await apiFetch('/api/session/restore-summary', {
+      const res = await apiFetch('/api/session/restore-exact', {
         method: 'POST',
         body: JSON.stringify({
           messages,
           execution_mode: getPreferredExecutionMode(),
         }),
       });
-      if (!res.ok) throw new Error(`restore-summary failed: ${res.status}`);
+      if (!res.ok) throw new Error(`restore-exact failed: ${res.status}`);
       const data = await res.json();
       const newId = data.session_id as string | undefined;
       if (!newId) throw new Error('no session_id in response');

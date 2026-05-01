@@ -767,30 +767,9 @@ class SessionManager:
             await self.seed_from_summary(session_id, messages)
             return session_id, self._saved_session_meta(path, data)
 
-        # Exact resume: keep current system prompt, then append prior non-system messages.
-        from litellm import Message
-
-        agent_session = self.sessions[session_id]
-        restored: list[Message] = []
-        for raw in messages:
-            if not isinstance(raw, dict) or raw.get("role") == "system":
-                continue
-            try:
-                restored.append(Message.model_validate(raw))
-            except Exception as e:
-                logger.warning("Dropping malformed message during exact resume: %s", e)
-        if restored:
-            cm = agent_session.session.context_manager
-            cm.items = [cm.items[0]] + restored
-            cm.items.append(Message(
-                role="user",
-                content=(
-                    "[SYSTEM: This session was restored from a saved snapshot. "
-                    "Continue normally from the prior conversation using the currently available tools. "
-                    "If earlier tool results mention missing credentials or unavailable tools, re-check with current tools instead of assuming the blocker still exists. "
-                    "When the user asks to proceed/start, perform concrete tool actions in this same turn; do not say you will do it in the next turn.]"
-                ),
-            ))
+        # Exact resume: delegate to shared restore_exact
+        count = await self.restore_exact(session_id, messages)
+        logger.info("Exact resume of saved session %s: %d messages restored", saved_id, count)
         return session_id, self._saved_session_meta(path, data)
 
     async def seed_from_summary(self, session_id: str, messages: list[dict]) -> int:
@@ -856,6 +835,43 @@ class SessionManager:
         )
         session.context_manager.items.append(seed)
         return len(parsed)
+
+    async def restore_exact(self, session_id: str, messages: list[dict]) -> int:
+        """Restore prior messages directly into a session's context.
+
+        Appends all non-system messages verbatim (no summarization), plus a
+        SYSTEM restoration note. Returns the number of messagess restored.
+        """
+        from litellm import Message
+
+        agent_session = self.sessions.get(session_id)
+        if not agent_session:
+            raise ValueError(f"Session {session_id} not found")
+
+        restored: list[Message] = []
+        for raw in messages:
+            if not isinstance(raw, dict) or raw.get("role") == "system":
+                continue
+            try:
+                restored.append(Message.model_validate(raw))
+            except Exception as e:
+                logger.warning("Dropping malformed message during exact restore: %s", e)
+
+        if not restored:
+            return 0
+
+        cm = agent_session.session.context_manager
+        cm.items = [cm.items[0]] + restored
+        cm.items.append(Message(
+            role="user",
+            content=(
+                "[SYSTEM: This session was restored from a prior conversation. "
+                "Continue normally from the prior conversation using the currently available tools. "
+                "If earlier tool results mention missing credentials or unavailable tools, re-check with current tools instead of assuming the blocker still exists. "
+                "When the user asks to proceed/start, perform concrete tool actions in this same turn; do not say you will do it in the next turn.]"
+            ),
+        ))
+        return len(restored)
 
     @staticmethod
     async def _cleanup_sandbox(session: Session) -> None:
