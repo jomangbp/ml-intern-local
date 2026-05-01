@@ -402,6 +402,15 @@ class LLMResult:
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
+
+    # ── Ollama streaming fallback ───────────────────────────────────────
+    # litellm's ollama/ provider streams tool calls as raw text content
+    # (\u201c{"name": "bash", ...}\u201d) instead of structured delta.tool_calls.
+    # The synchronous path converts correctly, so fall back to non-streaming
+    # for Ollama models so tool calls are always parsed as structured calls.
+    if (llm_params.get("model") or "").startswith("ollama/"):
+        return await _call_llm_non_streaming(session, messages, tools, llm_params)
+
     if is_codex_responses_params(llm_params):
         t_start = time.monotonic()
         result = await codex_responses_completion(
