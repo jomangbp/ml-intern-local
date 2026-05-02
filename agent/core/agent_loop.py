@@ -390,6 +390,143 @@ async def _cleanup_on_cancel(session: Session) -> None:
         session._running_job_ids.clear()
 
 
+import hashlib
+
+
+def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
+    """Detect tool calls emitted as raw JSON text in the response content.
+
+    Some models (especially smaller Ollama models) do not support the API-level
+    ``tools`` parameter and instead output the tool call as a JSON object in the
+    text response.  This helper tries to parse that JSON and returns a
+    ``tool_calls_acc`` dict in the same format the streaming/non-streaming
+    paths produce.
+
+    Handles:
+    • Bare JSON objects: {"name": "bash", "arguments": {...}}
+    • JSON with a ``function`` wrapper: {"function": {"name": ..., "arguments": ...}}
+    • Embedded JSON inside markdown fences or surrounding text
+    • Arrays of tool calls
+    • Multiple concatenated JSON objects
+    """
+    if not content or not content.strip():
+        return {}
+
+    detected: dict[int, dict] = {}
+    text = content.strip()
+
+    def _try_parse(obj: dict | list) -> None:
+        """Recursively extract tool calls from a parsed JSON object."""
+        nonlocal detected
+        if isinstance(obj, list):
+            for item in obj:
+                _try_parse(item)
+            return
+        if not isinstance(obj, dict):
+            return
+
+        # Determine the tool name from various formats
+        name = None
+        args_raw = None
+        if "name" in obj and "arguments" in obj:
+            name = obj.get("name")
+            args_raw = obj.get("arguments")
+        elif "function" in obj and isinstance(obj["function"], dict):
+            name = obj["function"].get("name")
+            args_raw = obj["function"].get("arguments")
+
+        if not name or args_raw is None:
+            return
+
+        # Ensure name is a string
+        if not isinstance(name, str):
+            return
+
+        # Normalize arguments to a JSON string
+        if isinstance(args_raw, str):
+            args_str = args_raw
+        else:
+            try:
+                args_str = json.dumps(args_raw, ensure_ascii=False)
+            except Exception:
+                return
+
+        # Generate a deterministic ID so the agent loop can track it
+        tid = "tc_text_" + hashlib.md5(f"{name}:{args_str}".encode()).hexdigest()[:12]
+
+        idx = len(detected)
+        detected[idx] = {
+            "id": tid,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": args_str,
+            },
+        }
+
+    # --- Strategy 1: try parsing the whole text as JSON ---
+    try:
+        parsed = json.loads(text)
+        _try_parse(parsed)
+        if detected:
+            return detected
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # --- Strategy 2: extract JSON from markdown fences or surrounding text ---
+    # Look for ```json ... ``` or ``` ... ``` blocks
+    import re
+    fence_pattern = re.compile(r"```(?:json)?\s*\n?(\{.*?\}|\[.*?\])\s*\n?```", re.DOTALL)
+    for m in fence_pattern.finditer(text):
+        try:
+            parsed = json.loads(m.group(1))
+            _try_parse(parsed)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    if detected:
+        return detected
+
+    # --- Strategy 3: find the first JSON object or array in the text ---
+    # Find the first { ... } or [ ... ] block
+    brace_start = None
+    bracket_start = None
+    for i, ch in enumerate(text):
+        if ch == '{' and brace_start is None:
+            brace_start = i
+        elif ch == '[' and bracket_start is None:
+            bracket_start = i
+        if brace_start is not None or bracket_start is not None:
+            break
+
+    start = None
+    end_char = None
+    if brace_start is not None and (bracket_start is None or brace_start < bracket_start):
+        start = brace_start
+        end_char = '}'
+    elif bracket_start is not None:
+        start = bracket_start
+        end_char = ']'
+
+    if start is not None:
+        # Find matching closing bracket
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == end_char:
+                depth -= 1
+                if depth <= 0:
+                    candidate = text[start:i+1]
+                    try:
+                        parsed = json.loads(candidate)
+                        _try_parse(parsed)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+            elif text[i] in ('{', '['):
+                depth += 1
+
+    return detected
+
+
 @dataclass
 class LLMResult:
     """Result from an LLM call (streaming or non-streaming)."""
@@ -852,6 +989,22 @@ class Handlers:
                     )
                     iteration += 1
                     continue  # retry this iteration
+
+                # If the model didn't produce structured tool calls, check if
+                # the text content contains a tool call as raw JSON (common with
+                # smaller Ollama models that don't support the tools parameter).
+                if not tool_calls_acc and content:
+                    tool_calls_acc = _extract_tool_calls_from_content(content)
+                    if tool_calls_acc:
+                        logger.info(
+                            "Extracted %d tool call(s) from plain-text content: %s",
+                            len(tool_calls_acc),
+                            [tc["function"]["name"] for tc in tool_calls_acc.values()],
+                        )
+                        await session.send_event(Event(
+                            event_type="tool_log",
+                            data={"tool": "system", "log": "Model emitted tool call as text — parsed automatically."},
+                        ))
 
                 # Build tool_calls list from accumulated deltas
                 tool_calls: list[ToolCall] = []
