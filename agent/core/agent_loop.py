@@ -17,6 +17,7 @@ from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 from agent.core.llm_params import _resolve_llm_params
+from agent.core.overflow import is_context_overflow, is_silent_overflow
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
 from agent.core.tools import ToolRouter
@@ -947,6 +948,20 @@ class Handlers:
                 token_count = llm_result.token_count
                 finish_reason = llm_result.finish_reason
 
+                # Detect silent overflow: model returned empty content with no tool calls
+                # This can happen when context is too large and the model gives up silently
+                if not content and not tool_calls_acc and token_count == 0:
+                    cm = session.context_manager
+                    if cm.running_context_usage > cm.compaction_threshold * 0.8:
+                        logger.warning(
+                            "Silent overflow suspected at iteration %d — empty response "
+                            "with high context usage (%d/%d). Forcing compaction.",
+                            iteration, cm.running_context_usage, cm.model_max_tokens,
+                        )
+                        cm.force_compaction()
+                        await _compact_and_notify(session)
+                        continue
+
                 # If output was truncated, all tool call args are garbage.
                 # Inject a system hint so the LLM retries with smaller content.
                 if finish_reason == "length" and tool_calls_acc:
@@ -1281,7 +1296,7 @@ class Handlers:
                     "(usage=%d, model_max_tokens=%d, messages=%d)",
                     iteration, cm.running_context_usage, cm.model_max_tokens, len(cm.items),
                 )
-                cm.running_context_usage = cm.model_max_tokens + 1
+                cm.force_compaction()
                 await _compact_and_notify(session)
                 continue
 
@@ -1289,8 +1304,22 @@ class Handlers:
                 import traceback
 
                 error_msg = _friendly_error_message(e)
+                error_str = str(e)
+
+                # Check for context overflow patterns in error messages
+                if is_context_overflow(error_str):
+                    cm = session.context_manager
+                    logger.warning(
+                        "Context overflow detected at iteration %d (pattern match) — "
+                        "forcing compaction (usage=%d, model_max_tokens=%d, messages=%d)",
+                        iteration, cm.running_context_usage, cm.model_max_tokens, len(cm.items),
+                    )
+                    cm.force_compaction()
+                    await _compact_and_notify(session)
+                    continue
+
                 if error_msg is None:
-                    error_msg = str(e) + "\n" + traceback.format_exc()
+                    error_msg = error_str + "\n" + traceback.format_exc()
 
                 await session.send_event(
                     Event(

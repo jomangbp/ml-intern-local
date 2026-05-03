@@ -418,9 +418,10 @@ class ContextManager:
                 count += 1
         return False
 
-    # Compaction fires at 90% of model_max_tokens so there's headroom for
+    # Compaction fires at 80% of model_max_tokens so there's headroom for
     # the next turn's prompt + response before we actually hit the ceiling.
-    _COMPACT_THRESHOLD_RATIO = 0.9
+    # Lowered from 0.9 to 0.8 to be more proactive about context management.
+    _COMPACT_THRESHOLD_RATIO = 0.8
 
     @property
     def compaction_threshold(self) -> int:
@@ -430,6 +431,10 @@ class ContextManager:
     @property
     def needs_compaction(self) -> bool:
         return self.running_context_usage > self.compaction_threshold and bool(self.items)
+
+    def force_compaction(self) -> None:
+        """Force compaction on next check by setting usage above threshold."""
+        self.running_context_usage = self.model_max_tokens + 1
 
     async def compact(
         self,
