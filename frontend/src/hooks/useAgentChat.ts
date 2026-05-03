@@ -69,6 +69,7 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
         updateSession(sessionId, {
           isProcessing: true,
           activityStatus: { type: 'thinking' },
+          compactionNotice: null, // clear previous compaction notice on new turn
         });
       },
       onProcessingDone: () => {
@@ -77,10 +78,20 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       onUndoComplete: () => {
         updateSession(sessionId, { isProcessing: false });
       },
-      onCompacted: (oldTokens: number, newTokens: number) => {
+      onCompacted: (oldTokens: number, newTokens: number, tokensSaved?: number, messagesBefore?: number, messagesAfter?: number, summary?: string) => {
         logger.log(`Context compacted: ${oldTokens} -> ${newTokens} tokens`);
-        // Clear compacting status
-        updateSession(sessionId, { activityStatus: { type: 'thinking' } });
+        updateSession(sessionId, {
+          activityStatus: { type: 'thinking' },
+          compactionNotice: {
+            oldTokens,
+            newTokens,
+            tokensSaved: tokensSaved || oldTokens - newTokens,
+            messagesBefore,
+            messagesAfter,
+            summary,
+            timestamp: Date.now(),
+          },
+        });
       },
       onPlanUpdate: (plan) => {
         const typed = plan as Array<{ id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }>;

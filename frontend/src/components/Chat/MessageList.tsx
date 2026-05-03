@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useMemo } from 'react';
 import { Box, Stack, Typography } from '@mui/material';
 import MessageBubble from './MessageBubble';
 import ActivityStatusBar from './ActivityStatusBar';
+import CompactionNotice from './CompactionNotice';
 import { useAgentStore } from '@/store/agentStore';
 import type { UIMessage } from 'ai';
 
@@ -99,13 +100,18 @@ export default function MessageList({ messages, isProcessing, sessionId, approve
     return null;
   }, [messages]);
 
-  // The last assistant message is "streaming" when we're processing
   const lastAssistantId = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'assistant') return messages[i].id;
     }
     return null;
   }, [messages]);
+
+  // Show compaction notice for this session
+  const compactionNotice = useMemo(() => {
+    if (!sessionId) return null;
+    return useAgentStore.getState().getSessionState(sessionId).compactionNotice;
+  }, [sessionId, messages.length]);
 
   return (
     <Box
@@ -144,6 +150,10 @@ export default function MessageList({ messages, isProcessing, sessionId, approve
               approveTools={approveTools}
             />
           ))
+        )}
+
+        {compactionNotice && (
+          <CompactionNotice notice={compactionNotice} />
         )}
 
         <ActivityStatusBar />

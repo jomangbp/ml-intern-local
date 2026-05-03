@@ -82,6 +82,16 @@ export interface ResearchAgentState {
   stats: ResearchAgentStats;
 }
 
+export interface CompactionNotice {
+  oldTokens: number;
+  newTokens: number;
+  tokensSaved: number;
+  messagesBefore?: number;
+  messagesAfter?: number;
+  summary?: string;
+  timestamp: number;
+}
+
 /** State that is tracked per-session (each session has its own copy). */
 export interface PerSessionState {
   isProcessing: boolean;
@@ -96,6 +106,8 @@ export interface PerSessionState {
   researchSteps: string[];
   /** @deprecated kept for backward compat selectors — use researchAgents instead */
   researchStats: ResearchAgentStats;
+  /** Last compaction notice to display in the chat */
+  compactionNotice: CompactionNotice | null;
 }
 
 const defaultResearchStats: ResearchAgentStats = { toolCount: 0, tokenCount: 0, startedAt: null, finalElapsed: null };
@@ -110,6 +122,7 @@ const defaultSessionState: PerSessionState = {
   researchAgents: {},
   researchSteps: [],
   researchStats: { ...defaultResearchStats },
+  compactionNotice: null,
 };
 
 interface AgentStore {
@@ -386,6 +399,7 @@ export const useAgentStore = create<AgentStore>()((set, get) => ({
         researchAgents: state.sessionStates[state.activeSessionId]?.researchAgents ?? {},
         researchSteps: state.sessionStates[state.activeSessionId]?.researchSteps ?? [],
         researchStats: state.sessionStates[state.activeSessionId]?.researchStats ?? { ...defaultResearchStats },
+        compactionNotice: state.sessionStates[state.activeSessionId]?.compactionNotice ?? null,
       };
     }
 

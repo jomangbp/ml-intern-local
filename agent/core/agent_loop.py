@@ -384,30 +384,41 @@ async def _compact_and_notify(session: Session) -> None:
                 data={"tool": "system", "log": "Compacting context..."},
             )
         )
-    await cm.compact(
+    stats = await cm.compact(
         model_name=session.config.model_name,
         tool_specs=session.tool_router.get_tool_specs_for_llm(),
         hf_token=session.hf_token,
         provider_keys=getattr(session, "provider_keys", None),
     )
-    new_usage = cm.running_context_usage
-    if new_usage != old_usage:
-        logger.warning(
-            "Context compacted: %d -> %d tokens (max=%d, %d messages)",
-            old_usage, new_usage, cm.model_max_tokens, len(cm.items),
+    if stats is None:
+        return
+    new_usage = stats["tokens_after"]
+    saved = stats["tokens_saved"]
+    logger.warning(
+        "Context compacted: %d -> %d tokens (saved %d, max=%d, %d -> %d messages)",
+        old_usage, new_usage, saved, cm.model_max_tokens,
+        stats["messages_before"], stats["messages_after"],
+    )
+    await session.send_event(
+        Event(
+            event_type="tool_log",
+            data={"tool": "system", "log": f"Context compacted: {old_usage} -> {new_usage} tokens ({saved} saved)"},
         )
-        await session.send_event(
-            Event(
-                event_type="tool_log",
-                data={"tool": "system", "log": f"Context compacted: {old_usage} -> {new_usage} tokens"},
-            )
+    )
+    await session.send_event(
+        Event(
+            event_type="compacted",
+            data={
+                "old_tokens": old_usage,
+                "new_tokens": new_usage,
+                "tokens_saved": saved,
+                "messages_before": stats["messages_before"],
+                "messages_after": stats["messages_after"],
+                "messages_removed": stats["messages_removed"],
+                "summary": stats["summary"],
+            },
         )
-        await session.send_event(
-            Event(
-                event_type="compacted",
-                data={"old_tokens": old_usage, "new_tokens": new_usage},
-            )
-        )
+    )
 
 
 async def _cleanup_on_cancel(session: Session) -> None:

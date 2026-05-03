@@ -76,6 +76,11 @@ export interface TurnCompleteEventData {
 export interface CompactedEventData {
   old_tokens: number;
   new_tokens: number;
+  tokens_saved?: number;
+  messages_before?: number;
+  messages_after?: number;
+  messages_removed?: number;
+  summary?: string;
 }
 
 export interface ErrorEventData {

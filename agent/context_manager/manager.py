@@ -442,10 +442,17 @@ class ContextManager:
         tool_specs: list[dict] | None = None,
         hf_token: str | None = None,
         provider_keys: dict[str, str] | None = None,
-    ) -> None:
-        """Remove old messages to keep history under target size"""
+    ) -> dict[str, Any] | None:
+        """Remove old messages to keep history under target size.
+
+        Returns a dict with compaction statistics when compaction actually runs,
+        or None when no compaction was needed.
+        """
         if not self.needs_compaction:
-            return
+            return None
+
+        tokens_before = self.running_context_usage
+        messages_before = len(self.items)
 
         system_msg = (
             self.items[0] if self.items and self.items[0].role == "system" else None
@@ -472,7 +479,7 @@ class ContextManager:
 
         # improbable, messages would have to very long
         if not messages_to_summarize:
-            return
+            return None
 
         summary, completion_tokens = await summarize_messages(
             messages_to_summarize,
@@ -504,3 +511,15 @@ class ContextManager:
         except Exception as e:
             logger.warning("token_counter failed post-compact (%s); falling back to rough estimate", e)
             self.running_context_usage = len(self.system_prompt) // 4 + completion_tokens
+
+        tokens_after = self.running_context_usage
+        messages_after = len(self.items)
+        return {
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+            "messages_before": messages_before,
+            "messages_after": messages_after,
+            "tokens_saved": tokens_before - tokens_after,
+            "messages_removed": messages_before - messages_after,
+            "summary": summary,
+        }
