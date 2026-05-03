@@ -13,13 +13,11 @@ Covers two regressions on 2026-04-25:
 """
 
 from agent.core.agent_loop import (
-    _MAX_LLM_RETRIES,
-    _LLM_RATE_LIMIT_RETRY_DELAYS,
-    _LLM_RETRY_DELAYS,
+    _is_cloud_overloaded,
     _is_context_overflow_error,
     _is_rate_limit_error,
     _is_transient_error,
-    _retry_delay_for,
+    _persistent_retry_delay,
 )
 
 
@@ -70,31 +68,52 @@ def test_timeout_is_transient_but_not_rate_limit():
     assert not _is_rate_limit_error(err)
 
 
-# ── retry schedule selection ────────────────────────────────────────────
+# ── retry delay (persistent backoff) ───────────────────────────────────
 
 
-def test_rate_limit_uses_longer_schedule():
+def test_rate_limit_uses_longer_base_delay():
     err = Exception("Too many tokens, please wait before trying again.")
-    delays = [_retry_delay_for(err, i) for i in range(len(_LLM_RATE_LIMIT_RETRY_DELAYS))]
-    assert delays == _LLM_RATE_LIMIT_RETRY_DELAYS
-    # Just past the schedule → None (stop retrying).
-    assert _retry_delay_for(err, len(_LLM_RATE_LIMIT_RETRY_DELAYS)) is None
+    assert _is_rate_limit_error(err)
+    # Rate-limited: base 30s → attempt 0 = 30s
+    assert _persistent_retry_delay(err, 0) == 30
 
 
-def test_other_transient_uses_short_schedule():
+def test_cloud_overloaded_uses_medium_base_delay():
+    err = Exception("Server overloaded, try again later")
+    assert _is_cloud_overloaded(err)
+    assert _is_transient_error(err)
+    # Cloud overload: base 15s → attempt 0 = 15s
+    assert _persistent_retry_delay(err, 0) == 15
+
+
+def test_other_transient_uses_short_base_delay():
     err = Exception("503 service unavailable")
-    delays = [_retry_delay_for(err, i) for i in range(len(_LLM_RETRY_DELAYS))]
-    assert delays == _LLM_RETRY_DELAYS
-    assert _retry_delay_for(err, len(_LLM_RETRY_DELAYS)) is None
+    assert _is_transient_error(err)
+    assert not _is_rate_limit_error(err)
+    assert not _is_cloud_overloaded(err)
+    # Transient: base 5s → attempt 0 = 5s
+    assert _persistent_retry_delay(err, 0) == 5
 
 
-def test_non_transient_returns_none():
+def test_persistent_retry_grows_exponentially():
+    err = Exception("503 service unavailable")
+    # 5 * 2^0 = 5, 5 * 2^1 = 10, 5 * 2^2 = 20, 5 * 2^3 = 40
+    assert _persistent_retry_delay(err, 0) == 5
+    assert _persistent_retry_delay(err, 1) == 10
+    assert _persistent_retry_delay(err, 2) == 20
+    assert _persistent_retry_delay(err, 3) == 40
+
+
+def test_persistent_retry_caps_at_300_seconds():
+    err = Exception("503 service unavailable")
+    # 5 * 2^6 = 320 → capped at 300
+    assert _persistent_retry_delay(err, 6) == 300
+    # 5 * 2^10 = 5120 → capped at 300
+    assert _persistent_retry_delay(err, 10) == 300
+
+
+def test_non_transient_not_detected():
     err = Exception("invalid request: bad parameter")
-    assert _retry_delay_for(err, 0) is None
-
-
-def test_rate_limit_total_budget_covers_bedrock_bucket_recovery():
-    """The whole point of the rate-limit schedule: total wait time should
-    exceed the ~60s Bedrock TPM bucket recovery window."""
-    assert len(_LLM_RATE_LIMIT_RETRY_DELAYS) == _MAX_LLM_RETRIES - 1
-    assert sum(_LLM_RATE_LIMIT_RETRY_DELAYS) > 60
+    assert not _is_transient_error(err)
+    assert not _is_rate_limit_error(err)
+    assert not _is_cloud_overloaded(err)

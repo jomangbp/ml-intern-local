@@ -208,9 +208,6 @@ def _needs_approval(
 
 
 # -- LLM retry constants --------------------------------------------------
-_MAX_LLM_RETRIES = 3
-_LLM_RETRY_DELAYS = [5, 15, 30]  # seconds between retries
-_LLM_RATE_LIMIT_RETRY_DELAYS = [30, 60]  # exceed Bedrock's ~60s TPM bucket window
 
 
 def _is_rate_limit_error(error: Exception) -> bool:
@@ -226,6 +223,23 @@ def _is_rate_limit_error(error: Exception) -> bool:
         "throttl",
     ]
     return any(pattern in err_str for pattern in rate_limit_patterns)
+
+
+def _is_cloud_overloaded(error: Exception) -> bool:
+    """Detect Ollama cloud overload specifically — needs persistent retry."""
+    msg = str(error).lower()
+    return any(p in msg for p in ["overloaded", "server overloaded", "capacity"])
+
+
+def _persistent_retry_delay(error: Exception, attempt: int) -> int:
+    """Exponential backoff for persistent retries, capped at 5 minutes."""
+    if _is_rate_limit_error(error):
+        base = 30
+    elif _is_cloud_overloaded(error):
+        base = 15
+    else:
+        base = 5
+    return min(base * (2 ** attempt), 300)
 
 
 def _is_context_overflow_error(error: Exception) -> bool:
@@ -244,20 +258,6 @@ def _is_context_overflow_error(error: Exception) -> bool:
         "input is too long",
     ]
     return any(pattern in err_str for pattern in overflow_patterns)
-
-
-def _retry_delay_for(error: Exception, attempt_index: int) -> int | None:
-    """Return the delay for this retry attempt, or None if it should not retry."""
-    if _is_rate_limit_error(error):
-        schedule = _LLM_RATE_LIMIT_RETRY_DELAYS
-    elif _is_transient_error(error):
-        schedule = _LLM_RETRY_DELAYS
-    else:
-        return None
-
-    if attempt_index >= len(schedule):
-        return None
-    return schedule[attempt_index]
 
 
 def _is_transient_error(error: Exception) -> bool:
@@ -645,6 +645,19 @@ class LLMResult:
     usage: dict = field(default_factory=dict)
 
 
+async def _make_cancelled_result(session: Session):
+    """Notify the frontend and return a cancelled LLMResult."""
+    logger.info("LLM call cancelled by user")
+    await session.send_event(Event(
+        event_type="tool_log",
+        data={"tool": "system", "log": "⏹️ Stopped"},
+    ))
+    return LLMResult(
+        content=None, tool_calls_acc={}, token_count=0,
+        finish_reason="cancelled", usage={},
+    )
+
+
 def _maybe_enable_ollama_think(llm_params: dict) -> dict:
     """Enable Ollama's `think` parameter for reasoning-capable models.
 
@@ -708,7 +721,8 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     _healed_effort = False  # one-shot safety net per call
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
-    for _llm_attempt in range(_MAX_LLM_RETRIES):
+    llm_attempt = 0
+    while True:
         try:
             response = await acompletion(
                 messages=messages,
@@ -722,6 +736,8 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
             break
         except ContextWindowExceededError:
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             if _is_context_overflow_error(e):
                 raise ContextWindowExceededError(str(e)) from e
@@ -733,19 +749,29 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
                     data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
                 ))
                 continue
-            _delay = _retry_delay_for(e, _llm_attempt)
-            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
-                logger.warning(
-                    "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
-                    _llm_attempt + 1, _MAX_LLM_RETRIES, e, _delay,
-                )
-                await session.send_event(Event(
-                    event_type="tool_log",
-                    data={"tool": "system", "log": f"LLM connection error, retrying in {_delay}s..."},
-                ))
-                await asyncio.sleep(_delay)
-                continue
-            raise
+            if not _is_transient_error(e):
+                raise
+            # Allow user interruption during retries
+            if session.is_cancelled:
+                logger.info("LLM call cancelled by user during retry")
+                return await _make_cancelled_result(session)
+            # Persistent retry with exponential backoff
+            delay = _persistent_retry_delay(e, llm_attempt)
+            mins = delay // 60
+            secs = delay % 60
+            wait_msg = f"{mins}m{secs}s" if mins else f"{secs}s"
+            logger.warning(
+                "Transient LLM error (attempt %d): %s — retrying in %s",
+                llm_attempt + 1, e, wait_msg,
+            )
+            state = "overloaded" if _is_cloud_overloaded(e) else "connection_error"
+            await session.send_event(Event(
+                event_type="tool_log",
+                data={"tool": "system", "log": f"{'☁️ Cloud overloaded' if state == 'overloaded' else '🔌 Connection error'} — retrying in {wait_msg} (attempt {llm_attempt + 1})…"},
+            ))
+            llm_attempt += 1
+            await asyncio.sleep(delay)
+            continue
 
     full_content = ""
     tool_calls_acc: dict[int, dict] = {}
@@ -848,7 +874,8 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     _healed_effort = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
-    for _llm_attempt in range(_MAX_LLM_RETRIES):
+    llm_attempt = 0
+    while True:
         try:
             response = await acompletion(
                 messages=messages,
@@ -861,6 +888,8 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
             break
         except ContextWindowExceededError:
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             if _is_context_overflow_error(e):
                 raise ContextWindowExceededError(str(e)) from e
@@ -872,19 +901,29 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
                     data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
                 ))
                 continue
-            _delay = _retry_delay_for(e, _llm_attempt)
-            if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
-                logger.warning(
-                    "Transient LLM error (attempt %d/%d): %s — retrying in %ds",
-                    _llm_attempt + 1, _MAX_LLM_RETRIES, e, _delay,
-                )
-                await session.send_event(Event(
-                    event_type="tool_log",
-                    data={"tool": "system", "log": f"LLM connection error, retrying in {_delay}s..."},
-                ))
-                await asyncio.sleep(_delay)
-                continue
-            raise
+            if not _is_transient_error(e):
+                raise
+            # Allow user interruption during retries
+            if session.is_cancelled:
+                logger.info("LLM call cancelled by user during retry")
+                return await _make_cancelled_result(session)
+            # Persistent retry with exponential backoff
+            delay = _persistent_retry_delay(e, llm_attempt)
+            mins = delay // 60
+            secs = delay % 60
+            wait_msg = f"{mins}m{secs}s" if mins else f"{secs}s"
+            logger.warning(
+                "Transient LLM error (attempt %d): %s — retrying in %s",
+                llm_attempt + 1, e, wait_msg,
+            )
+            state = "overloaded" if _is_cloud_overloaded(e) else "connection_error"
+            await session.send_event(Event(
+                event_type="tool_log",
+                data={"tool": "system", "log": f"{'☁️ Cloud overloaded' if state == 'overloaded' else '🔌 Connection error'} — retrying in {wait_msg} (attempt {llm_attempt + 1})…"},
+            ))
+            llm_attempt += 1
+            await asyncio.sleep(delay)
+            continue
 
     choice = response.choices[0]
     message = choice.message
