@@ -450,6 +450,31 @@ async def _cleanup_on_cancel(session: Session) -> None:
 import hashlib
 
 
+def _find_json_span(text: str, start: int) -> tuple[int, int] | None:
+    """Find a balanced JSON object or array starting at or after `start`.
+
+    Returns (obj_start, obj_end) inclusive indices, or None if nothing found.
+    Skips non-JSON characters to find the next `{` or `[`.
+    """
+    import re as _re
+    # Look for the next `{` or `[` starting from `start`
+    m = _re.search(r'[\[{]', text[start:])
+    if not m:
+        return None
+    obj_start = start + m.start()
+    open_char = text[obj_start]
+    close_char = '}' if open_char == '{' else ']'
+    depth = 0
+    for i in range(obj_start, len(text)):
+        if text[i] == open_char:
+            depth += 1
+        elif text[i] == close_char:
+            depth -= 1
+            if depth <= 0:
+                return (obj_start, i)
+    return None
+
+
 def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dict], str | None]:
     """Detect tool calls emitted as raw JSON text and strip them from content.
 
@@ -465,7 +490,8 @@ def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dic
     • JSON with a ``function`` wrapper: {"function": {"name": ..., "arguments": ...}}
     • Embedded JSON inside markdown fences or surrounding text
     • Arrays of tool calls
-    • Multiple concatenated JSON objects
+    • Multiple concatenated JSON objects (iterated until none left)
+    • "Tool Calls: [...]" or "tool_call: {...}" prefixed patterns
 
     Returns (tool_calls_dict, cleaned_content).  cleaned_content may be None
     if the entire text consisted of tool call JSON.
@@ -473,9 +499,11 @@ def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dic
     if not content or not content.strip():
         return {}, content
 
+    import re
+
     detected: dict[int, dict] = {}
     text = content
-    # Track ranges to remove: list of (start, end) indices
+    # Track ranges to remove: list of (start, end) indices (inclusive end)
     remove_ranges: list[tuple[int, int]] = []
 
     def _try_parse(obj: dict | list) -> None:
@@ -529,13 +557,11 @@ def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dic
         parsed = json.loads(stripped)
         _try_parse(parsed)
         if detected:
-            # Entire text was a tool call → no content left
             return detected, None
     except (json.JSONDecodeError, ValueError):
         pass
 
     # --- Strategy 2: extract JSON from markdown fences ---
-    import re
     fence_pattern = re.compile(r"```(?:json)?\s*\n?(\{.*?\}|\[.*?\])\s*\n?```", re.DOTALL)
     for m in fence_pattern.finditer(text):
         try:
@@ -543,55 +569,53 @@ def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dic
             _try_parse(parsed)
         except (json.JSONDecodeError, ValueError):
             continue
-        remove_ranges.append((m.start(), m.end()))
-    if detected:
-        return detected, _remove_ranges(text, remove_ranges)
+        remove_ranges.append((m.start(), m.end() - 1))
 
-    # --- Strategy 3: find the first JSON object or array in the text ---
-    brace_start = None
-    bracket_start = None
-    for i, ch in enumerate(text):
-        if ch == '{' and brace_start is None:
-            brace_start = i
-        elif ch == '[' and bracket_start is None:
-            bracket_start = i
-        if brace_start is not None or bracket_start is not None:
+    # --- Strategy 3: iteratively find all bare JSON objects/arrays ---
+    # Also captures common prefixes like "Tool Calls:" or "tool_call:"
+    prefix_pattern = re.compile(
+        r'(?:^|\n)\s*'
+        r'(?:Tool\s+Calls?\s*[:=]|tool_calls?\s*[:=]|json\s*[:=]|output\s*[:=])\s*',
+        re.IGNORECASE,
+    )
+    scan_pos = 0
+    while scan_pos < len(text):
+        span = _find_json_span(text, scan_pos)
+        if span is None:
             break
+        obj_start, obj_end = span
+        candidate = text[obj_start:obj_end + 1]
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            # Not valid JSON, skip past this opening bracket
+            scan_pos = obj_end + 1
+            continue
 
-    start = None
-    end_char = None
-    if brace_start is not None and (bracket_start is None or brace_start < bracket_start):
-        start = brace_start
-        end_char = '}'
-    elif bracket_start is not None:
-        start = bracket_start
-        end_char = ']'
+        # Check if there's a prefix label before this JSON (on the same or prev line)
+        prefix_start = obj_start
+        line_start = text.rfind('\n', 0, obj_start)
+        line_start = 0 if line_start < 0 else line_start + 1
+        preceding = text[line_start:obj_start]
+        pm = prefix_pattern.match(preceding)
+        if pm:
+            prefix_start = line_start + pm.start()
 
-    if start is not None:
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == end_char:
-                depth -= 1
-                if depth <= 0:
-                    candidate = text[start:i+1]
-                    try:
-                        parsed = json.loads(candidate)
-                        _try_parse(parsed)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    else:
-                        if detected:
-                            remove_ranges.append((start, i + 1))
-                            return detected, _remove_ranges(text, remove_ranges)
-                    break
-            elif text[i] in ('{', '['):
-                depth += 1
+        _try_parse(parsed)
+        remove_ranges.append((prefix_start, obj_end))
+        scan_pos = obj_end + 1
 
-    return detected, text
+    if not detected:
+        return {}, content
+
+    return detected, _remove_ranges(text, remove_ranges)
 
 
 def _remove_ranges(text: str, ranges: list[tuple[int, int]]) -> str | None:
-    """Remove character ranges from text and return the remainder, or None if empty."""
+    """Remove character ranges from text and return the remainder, or None if empty.
+
+    Each range is (start, end_inclusive) — both start and end are removed.
+    """
     if not ranges:
         return text
     ranges = sorted(ranges, key=lambda r: r[0])
@@ -600,7 +624,7 @@ def _remove_ranges(text: str, ranges: list[tuple[int, int]]) -> str | None:
     for start, end in ranges:
         if start > prev_end:
             parts.append(text[prev_end:start])
-        prev_end = end
+        prev_end = end + 1  # inclusive end → exclusive
     if prev_end < len(text):
         parts.append(text[prev_end:])
     result = "".join(parts).strip()
