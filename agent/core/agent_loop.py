@@ -27,6 +27,38 @@ logger = logging.getLogger(__name__)
 
 ToolCall = ChatCompletionMessageToolCall
 
+# ── litellm Ollama patch ──────────────────────────────────────────────
+# litellm's OllamaChatConfig.transform_request drops `name` / `tool_name`
+# from tool-result messages when converting OpenAI format → Ollama format.
+# Ollama needs `tool_name` on `role: "tool"` messages to match results to
+# tool calls.  We patch the transform to post-process and restore it.
+def _patch_litellm_ollama() -> None:
+    try:
+        from litellm.llms.ollama.chat.transformation import OllamaChatConfig
+    except Exception:
+        return  # litellm structure may differ in future versions
+
+    _orig_transform = OllamaChatConfig.transform_request
+
+    def _patched_transform(self, model, messages, optional_params, litellm_params, headers):
+        result = _orig_transform(self, model, messages, optional_params, litellm_params, headers)
+        ollama_messages = result.get("messages", [])
+        for i, m in enumerate(messages):
+            if isinstance(m, dict) and m.get("role") == "tool":
+                if i < len(ollama_messages):
+                    ollama_msg = ollama_messages[i]
+                    if not ollama_msg.get("tool_name"):
+                        if m.get("tool_name"):
+                            ollama_msg["tool_name"] = m["tool_name"]
+                        elif m.get("name"):
+                            ollama_msg["tool_name"] = m["name"]
+        return result
+
+    OllamaChatConfig.transform_request = _patched_transform  # type: ignore[method-assign]
+
+
+_patch_litellm_ollama()
+
 _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
 _MALFORMED_TOOL_SUFFIX = "' had malformed JSON arguments"
 
@@ -574,8 +606,27 @@ class LLMResult:
     usage: dict = field(default_factory=dict)
 
 
+def _maybe_enable_ollama_think(llm_params: dict) -> dict:
+    """Enable Ollama's `think` parameter for reasoning-capable models.
+
+    Ollama supports `think=True` for models with reasoning capabilities
+    (e.g. qwen3, deepseek-v4).  litellm forwards this as a top-level
+    param in the Ollama /api/chat request.  We only set it when the
+    model is ollama/ and the user hasn't already configured `think` or
+    `reasoning_effort`.
+    """
+    model = llm_params.get("model", "")
+    if not model.startswith("ollama/"):
+        return llm_params
+    if "think" in llm_params or "reasoning_effort" in llm_params:
+        return llm_params
+    llm_params = {**llm_params, "think": True}
+    return llm_params
+
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
+
+    llm_params = _maybe_enable_ollama_think(llm_params)
 
     # ── Ollama streaming fallback ───────────────────────────────────────
     # litellm's ollama/ provider streams tool calls as raw text content
