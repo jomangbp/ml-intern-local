@@ -527,6 +527,10 @@ def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dic
             args_raw = obj["function"].get("arguments")
 
         if not name or args_raw is None:
+            # Not a direct tool call — try recursing into dict values
+            # This handles {"tool_calls": [...]} wrapper format
+            for val in obj.values():
+                _try_parse(val)
             return
         if not isinstance(name, str):
             return
