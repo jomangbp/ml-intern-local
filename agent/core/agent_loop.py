@@ -207,6 +207,46 @@ def _needs_approval(
     return False
 
 
+# -- LLM fallback for cloud overload -----------------------------------
+
+
+def _is_cloud_overloaded(err: Exception) -> bool:
+    """Check if the error is an Ollama cloud overload / transient error."""
+    msg = str(err).lower()
+    return (
+        "overloaded" in msg
+        or "capacity" in msg
+        or "server overloaded" in msg
+        or "service unavailable" in msg
+        or "503" in msg
+    )
+
+
+async def _find_local_ollama_model() -> str | None:
+    """Return the name of the first available local (non-cloud) Ollama model."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(
+                "http://localhost:11434/api/tags",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                for m in data.get("models", []):
+                    name = m.get("name", "")
+                    if "cloud" not in name and ":" in name:
+                        return name
+    except Exception:
+        pass
+    return None
+
+
+def _is_cloud_model(model: str) -> bool:
+    return ":cloud" in model or "/cloud" in model
+
+
 # -- LLM retry constants --------------------------------------------------
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_DELAYS = [5, 15, 30]  # seconds between retries
@@ -928,6 +968,78 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     )
 
 
+async def _call_llm_with_fallback(
+    session: Session,
+    messages: list,
+    tools: list,
+    llm_params: dict,
+) -> LLMResult:
+    """Call LLM, auto-falling back to a local model on cloud overload."""
+    model = llm_params.get("model", session.config.model_name)
+
+    async def _do_call() -> LLMResult:
+        if session.stream and not model.startswith("ollama/"):
+            fn = _call_llm_streaming
+        else:
+            fn = _call_llm_non_streaming
+        session._current_llm_task = asyncio.create_task(
+            fn(session, messages, tools, llm_params)
+        )
+        try:
+            return await session._current_llm_task
+        finally:
+            session._current_llm_task = None
+
+    try:
+        return await _do_call()
+    except asyncio.CancelledError:
+        logger.info("LLM call cancelled by user")
+        session._current_llm_task = None
+        return LLMResult(
+            content=None, tool_calls_acc={}, token_count=0,
+            finish_reason="cancelled", usage={},
+        )
+    except Exception as e:
+        session._current_llm_task = None
+        if not _is_cloud_model(model) or not _is_cloud_overloaded(e):
+            raise
+
+        fallback = await _find_local_ollama_model()
+        if not fallback:
+            logger.warning("Cloud overloaded but no local fallback available")
+            raise
+
+        logger.warning(
+            "Cloud model %s overloaded, switching to local %s", model, fallback,
+        )
+        await session.send_event(Event(
+            event_type="tool_log",
+            data={
+                "tool": "system",
+                "log": f"⚠️ Cloud overloaded — switched to local {fallback}",
+            },
+        ))
+
+        # Switch model and rebuild params
+        fallback_full = f"ollama/{fallback}"
+        session.update_model(fallback_full)
+        new_params = _resolve_llm_params(
+            session.config.model_name,
+            session.hf_token,
+            reasoning_effort=session.effective_effort_for(session.config.model_name),
+            provider_keys=getattr(session, "provider_keys", None),
+        )
+
+        # Retry with local model (always non-streaming for Ollama)
+        session._current_llm_task = asyncio.create_task(
+            _call_llm_non_streaming(session, messages, tools, new_params)
+        )
+        try:
+            return await session._current_llm_task
+        finally:
+            session._current_llm_task = None
+
+
 class Handlers:
     """Handler functions for each operation type"""
 
@@ -1054,37 +1166,16 @@ class Handlers:
             messages = session.context_manager.get_messages()
             tools = session.tool_router.get_tool_specs_for_llm()
             try:
-                # ── Call the LLM (streaming or non-streaming) ──
-                # Pull the per-model probed effort from the session cache when
-                # available; fall back to the raw preference for models we
-                # haven't probed yet (e.g. research sub-model).
+                # ── Call the LLM with cloud-overload fallback ──
                 llm_params = _resolve_llm_params(
                     session.config.model_name,
                     session.hf_token,
                     reasoning_effort=session.effective_effort_for(session.config.model_name),
                     provider_keys=getattr(session, "provider_keys", None),
                 )
-                if session.stream:
-                    session._current_llm_task = asyncio.create_task(
-                        _call_llm_streaming(session, messages, tools, llm_params)
-                    )
-                else:
-                    session._current_llm_task = asyncio.create_task(
-                        _call_llm_non_streaming(session, messages, tools, llm_params)
-                    )
-                try:
-                    llm_result = await session._current_llm_task
-                except asyncio.CancelledError:
-                    logger.info("LLM call cancelled by user")
-                    llm_result = LLMResult(
-                        content=None,
-                        tool_calls_acc={},
-                        token_count=0,
-                        finish_reason="cancelled",
-                        usage={},
-                    )
-                finally:
-                    session._current_llm_task = None
+                llm_result = await _call_llm_with_fallback(
+                    session, messages, tools, llm_params,
+                )
 
                 content = llm_result.content
                 tool_calls_acc = llm_result.tool_calls_acc
