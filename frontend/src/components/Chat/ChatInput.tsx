@@ -293,6 +293,13 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
     await onContinueBlockedJobsWithNamespace(namespace);
   }, [onContinueBlockedJobsWithNamespace]);
 
+  const handleCompact = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      await apiFetch(`/api/compact/${sessionId}`, { method: 'POST' });
+    } catch { /* ignore */ }
+  }, [sessionId]);
+
   // Hide the chip until the user has actually burned quota — an unused
   // Opus session shouldn't populate a counter.
   const claudeChip = (() => {
@@ -410,35 +417,60 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
           )}
         </Box>
 
-        {/* Powered By Badge */}
+        {/* Powered By Badge + Compact Button */}
         <Box
-          onClick={handleModelClick}
           sx={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             mt: 1.5,
-            gap: 0.8,
-            opacity: 0.6,
-            cursor: 'pointer',
-            transition: 'opacity 0.2s',
-            '&:hover': {
-              opacity: 1
-            }
+            gap: 1,
           }}
         >
-          <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--muted-text)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
-            powered by
-          </Typography>
-          <img
-            src={selectedModel.avatarUrl}
-            alt={selectedModel.name}
-            style={{ height: '14px', width: '14px', objectFit: 'contain', borderRadius: '2px' }}
-          />
-          <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--text)', fontWeight: 600, letterSpacing: '0.02em' }}>
-            {selectedModel.name}
-          </Typography>
-          <ArrowDropDownIcon sx={{ fontSize: '14px', color: 'var(--muted-text)' }} />
+          <Box
+            onClick={handleModelClick}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.8,
+              opacity: 0.6,
+              cursor: 'pointer',
+              transition: 'opacity 0.2s',
+              '&:hover': { opacity: 1 }
+            }}
+          >
+            <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--muted-text)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+              powered by
+            </Typography>
+            <img
+              src={selectedModel.avatarUrl}
+              alt={selectedModel.name}
+              style={{ height: '14px', width: '14px', objectFit: 'contain', borderRadius: '2px' }}
+            />
+            <Typography variant="caption" sx={{ fontSize: '10px', color: 'var(--text)', fontWeight: 600, letterSpacing: '0.02em' }}>
+              {selectedModel.name}
+            </Typography>
+            <ArrowDropDownIcon sx={{ fontSize: '14px', color: 'var(--muted-text)' }} />
+          </Box>
+
+          {!isProcessing && (
+            <Typography
+              onClick={handleCompact}
+              sx={{
+                fontSize: '10px',
+                color: 'var(--muted-text)',
+                cursor: 'pointer',
+                opacity: 0.5,
+                transition: 'opacity 0.2s',
+                '&:hover': { opacity: 1, color: 'var(--accent-yellow)' },
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                fontWeight: 500,
+              }}
+            >
+              compact
+            </Typography>
+          )}
         </Box>
 
         {/* Model Selection Menu */}
