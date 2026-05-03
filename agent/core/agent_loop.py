@@ -952,9 +952,26 @@ class Handlers:
                     provider_keys=getattr(session, "provider_keys", None),
                 )
                 if session.stream:
-                    llm_result = await _call_llm_streaming(session, messages, tools, llm_params)
+                    session._current_llm_task = asyncio.create_task(
+                        _call_llm_streaming(session, messages, tools, llm_params)
+                    )
                 else:
-                    llm_result = await _call_llm_non_streaming(session, messages, tools, llm_params)
+                    session._current_llm_task = asyncio.create_task(
+                        _call_llm_non_streaming(session, messages, tools, llm_params)
+                    )
+                try:
+                    llm_result = await session._current_llm_task
+                except asyncio.CancelledError:
+                    logger.info("LLM call cancelled by user")
+                    llm_result = LLMResult(
+                        content=None,
+                        tool_calls_acc={},
+                        token_count=0,
+                        finish_reason="cancelled",
+                        usage={},
+                    )
+                finally:
+                    session._current_llm_task = None
 
                 content = llm_result.content
                 tool_calls_acc = llm_result.tool_calls_acc

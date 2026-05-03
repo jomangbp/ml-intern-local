@@ -109,6 +109,7 @@ class Session:
         self.session_id = str(uuid.uuid4())
         self.is_running = True
         self._cancelled = asyncio.Event()
+        self._current_llm_task: asyncio.Task | None = None
         self.pending_approval: Optional[dict[str, Any]] = None
         self.sandbox = None
         self._running_job_ids: set[str] = set()  # HF job IDs currently executing
@@ -152,8 +153,10 @@ class Session:
         HeartbeatSaver.maybe_fire(self)
 
     def cancel(self) -> None:
-        """Signal cancellation to the running agent loop."""
+        """Signal cancellation and abort the current LLM call."""
         self._cancelled.set()
+        if self._current_llm_task and not self._current_llm_task.done():
+            self._current_llm_task.cancel()
 
     def reset_cancel(self) -> None:
         """Clear the cancellation flag before a new run."""
