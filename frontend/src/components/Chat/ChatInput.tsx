@@ -4,6 +4,7 @@ import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import StopIcon from '@mui/icons-material/Stop';
 import { apiFetch } from '@/utils/api';
+import { logger } from '@/utils/logger';
 import { useUserQuota } from '@/hooks/useUserQuota';
 import ClaudeCapDialog from '@/components/ClaudeCapDialog';
 import JobsUpgradeDialog from '@/components/JobsUpgradeDialog';
@@ -119,6 +120,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   const setClaudeQuotaExhausted = useAgentStore((s) => s.setClaudeQuotaExhausted);
   const jobsUpgradeRequired = useAgentStore((s) => s.jobsUpgradeRequired);
   const setJobsUpgradeRequired = useAgentStore((s) => s.setJobsUpgradeRequired);
+  const updateSession = useAgentStore((s) => s.updateSession);
   const lastSentRef = useRef<string>('');
 
   // Load server-provided model list so UI stays in sync with backend config.
@@ -296,9 +298,19 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
   const handleCompact = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await apiFetch(`/api/compact/${sessionId}`, { method: 'POST' });
-    } catch { /* ignore */ }
-  }, [sessionId]);
+      updateSession(sessionId, { activityStatus: { type: 'compacting' } });
+      const res = await apiFetch(`/api/compact/${sessionId}`, { method: 'POST' });
+      if (res.ok) {
+        // Activity status will clear when 'compacted' event arrives
+        logger.log('Manual compact requested');
+      } else {
+        updateSession(sessionId, { activityStatus: { type: 'idle' } });
+      }
+    } catch (e) {
+      logger.error('Compact failed:', e);
+      updateSession(sessionId, { activityStatus: { type: 'idle' } });
+    }
+  }, [sessionId, updateSession]);
 
   // Hide the chip until the user has actually burned quota — an unused
   // Opus session shouldn't populate a counter.
@@ -456,6 +468,7 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
           {!isProcessing && (
             <Typography
               onClick={handleCompact}
+              data-testid="compact-button"
               sx={{
                 fontSize: '10px',
                 color: 'var(--muted-text)',
@@ -466,6 +479,10 @@ export default function ChatInput({ sessionId, onSend, onStop, onDeclineBlockedJ
                 textTransform: 'uppercase',
                 letterSpacing: '0.05em',
                 fontWeight: 500,
+                border: '1px solid var(--border)',
+                borderRadius: '4px',
+                px: 1,
+                py: 0.25,
               }}
             >
               compact
