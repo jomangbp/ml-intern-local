@@ -117,3 +117,12 @@ def test_non_transient_not_detected():
     assert not _is_transient_error(err)
     assert not _is_rate_limit_error(err)
     assert not _is_cloud_overloaded(err)
+
+
+def test_empty_response_is_transient():
+    """When the model returns empty content with no tool calls, retry."""
+    err = RuntimeError("Model returned empty response with no tool calls")
+    assert _is_transient_error(err)
+    assert not _is_cloud_overloaded(err)
+    # Base delay for transient = 5s
+    assert _persistent_retry_delay(err, 0) == 5

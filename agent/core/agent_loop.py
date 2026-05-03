@@ -270,7 +270,7 @@ def _is_transient_error(error: Exception) -> bool:
         "500", "internal server error",
         "overloaded", "capacity",
         "connection reset", "connection refused", "connection error",
-        "eof", "broken pipe",
+        "eof", "broken pipe", "empty response",
     ]
     return _is_rate_limit_error(error) or any(pattern in err_str for pattern in transient_patterns)
 
@@ -829,6 +829,12 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         finish_reason=finish_reason,
     )
 
+    # If the model returned no content and no tool calls, treat it as a
+    # transient error so the persistent retry logic kicks in.  This happens
+    # when the Ollama cloud is overloaded but still responds with empty chunks.
+    if not full_content and not tool_calls_acc:
+        raise RuntimeError("Model returned empty response with no tool calls")
+
     return LLMResult(
         content=full_content or None,
         tool_calls_acc=tool_calls_acc,
@@ -957,6 +963,10 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
         latency_ms=int((time.monotonic() - t_start) * 1000),
         finish_reason=finish_reason,
     )
+
+    # Treat empty responses as transient errors for retry
+    if not content and not tool_calls_acc:
+        raise RuntimeError("Model returned empty response with no tool calls")
 
     return LLMResult(
         content=content,
