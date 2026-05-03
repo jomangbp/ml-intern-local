@@ -848,8 +848,48 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
 
 
 def _messages_to_dict(messages: list) -> list[dict]:
-    """Convert litellm Message objects to plain dicts for Ollama API."""
-    return [m.model_dump(exclude_none=True) if hasattr(m, 'model_dump') else dict(m) for m in messages]
+    """Convert litellm Message objects to Ollama-native dicts.
+
+    Ollama's API uses a different tool_call format than OpenAI:
+      - ``function.arguments`` is a dict (not a JSON string)
+      - No ``id`` or ``type`` fields on tool calls
+      - No ``function_call`` or ``provider_specific_fields``
+
+    We mirror exactly what litellm's Ollama transformation does in
+    ``litellm.llms.ollama.chat.transformation``.
+    """
+    result: list[dict] = []
+    for m in messages:
+        d = m.model_dump(exclude_none=True) if hasattr(m, 'model_dump') else dict(m)
+
+        # Convert tool_calls from OpenAI format → Ollama native format
+        tool_calls = d.get("tool_calls")
+        if tool_calls and isinstance(tool_calls, list):
+            ollama_tcs = []
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                fn_name = fn.get("name", "")
+                fn_args = fn.get("arguments", {})
+                # Parse JSON string → dict if needed
+                if isinstance(fn_args, str):
+                    try:
+                        fn_args = json.loads(fn_args)
+                    except (json.JSONDecodeError, TypeError):
+                        fn_args = {}
+                ollama_tcs.append({
+                    "function": {
+                        "name": fn_name,
+                        "arguments": fn_args,
+                    }
+                })
+            d["tool_calls"] = ollama_tcs
+
+        # Strip litellm-only fields that confuse Ollama
+        d.pop("function_call", None)
+        d.pop("provider_specific_fields", None)
+
+        result.append(d)
+    return result
 
 
 async def _call_llm_ollama_direct(session: Session, messages, tools, llm_params) -> LLMResult:
