@@ -407,14 +407,15 @@ async def _cleanup_on_cancel(session: Session) -> None:
 import hashlib
 
 
-def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
-    """Detect tool calls emitted as raw JSON text in the response content.
+def _extract_tool_calls_from_content(content: str | None) -> tuple[dict[int, dict], str | None]:
+    """Detect tool calls emitted as raw JSON text and strip them from content.
 
     Some models (especially smaller Ollama models) do not support the API-level
     ``tools`` parameter and instead output the tool call as a JSON object in the
     text response.  This helper tries to parse that JSON and returns a
     ``tool_calls_acc`` dict in the same format the streaming/non-streaming
-    paths produce.
+    paths produce, **plus** the content with the JSON tool call(s) removed so the
+    assistant message doesn't show raw JSON.
 
     Handles:
     • Bare JSON objects: {"name": "bash", "arguments": {...}}
@@ -422,12 +423,17 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
     • Embedded JSON inside markdown fences or surrounding text
     • Arrays of tool calls
     • Multiple concatenated JSON objects
+
+    Returns (tool_calls_dict, cleaned_content).  cleaned_content may be None
+    if the entire text consisted of tool call JSON.
     """
     if not content or not content.strip():
-        return {}
+        return {}, content
 
     detected: dict[int, dict] = {}
-    text = content.strip()
+    text = content
+    # Track ranges to remove: list of (start, end) indices
+    remove_ranges: list[tuple[int, int]] = []
 
     def _try_parse(obj: dict | list) -> None:
         """Recursively extract tool calls from a parsed JSON object."""
@@ -451,8 +457,6 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
 
         if not name or args_raw is None:
             return
-
-        # Ensure name is a string
         if not isinstance(name, str):
             return
 
@@ -465,9 +469,7 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
             except Exception:
                 return
 
-        # Generate a deterministic ID so the agent loop can track it
         tid = "tc_text_" + hashlib.md5(f"{name}:{args_str}".encode()).hexdigest()[:12]
-
         idx = len(detected)
         detected[idx] = {
             "id": tid,
@@ -479,16 +481,17 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
         }
 
     # --- Strategy 1: try parsing the whole text as JSON ---
+    stripped = text.strip()
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(stripped)
         _try_parse(parsed)
         if detected:
-            return detected
+            # Entire text was a tool call → no content left
+            return detected, None
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # --- Strategy 2: extract JSON from markdown fences or surrounding text ---
-    # Look for ```json ... ``` or ``` ... ``` blocks
+    # --- Strategy 2: extract JSON from markdown fences ---
     import re
     fence_pattern = re.compile(r"```(?:json)?\s*\n?(\{.*?\}|\[.*?\])\s*\n?```", re.DOTALL)
     for m in fence_pattern.finditer(text):
@@ -497,11 +500,11 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
             _try_parse(parsed)
         except (json.JSONDecodeError, ValueError):
             continue
+        remove_ranges.append((m.start(), m.end()))
     if detected:
-        return detected
+        return detected, _remove_ranges(text, remove_ranges)
 
     # --- Strategy 3: find the first JSON object or array in the text ---
-    # Find the first { ... } or [ ... ] block
     brace_start = None
     bracket_start = None
     for i, ch in enumerate(text):
@@ -522,7 +525,6 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
         end_char = ']'
 
     if start is not None:
-        # Find matching closing bracket
         depth = 0
         for i in range(start, len(text)):
             if text[i] == end_char:
@@ -534,11 +536,32 @@ def _extract_tool_calls_from_content(content: str | None) -> dict[int, dict]:
                         _try_parse(parsed)
                     except (json.JSONDecodeError, ValueError):
                         pass
+                    else:
+                        if detected:
+                            remove_ranges.append((start, i + 1))
+                            return detected, _remove_ranges(text, remove_ranges)
                     break
             elif text[i] in ('{', '['):
                 depth += 1
 
-    return detected
+    return detected, text
+
+
+def _remove_ranges(text: str, ranges: list[tuple[int, int]]) -> str | None:
+    """Remove character ranges from text and return the remainder, or None if empty."""
+    if not ranges:
+        return text
+    ranges = sorted(ranges, key=lambda r: r[0])
+    parts: list[str] = []
+    prev_end = 0
+    for start, end in ranges:
+        if start > prev_end:
+            parts.append(text[prev_end:start])
+        prev_end = end
+    if prev_end < len(text):
+        parts.append(text[prev_end:])
+    result = "".join(parts).strip()
+    return result if result else None
 
 
 @dataclass
@@ -1039,8 +1062,10 @@ class Handlers:
                 # the text content contains a tool call as raw JSON (common with
                 # smaller Ollama models that don't support the tools parameter).
                 if not tool_calls_acc and content:
-                    tool_calls_acc = _extract_tool_calls_from_content(content)
-                    if tool_calls_acc:
+                    extracted, cleaned = _extract_tool_calls_from_content(content)
+                    if extracted:
+                        tool_calls_acc = extracted
+                        content = cleaned  # strip JSON from message display
                         logger.info(
                             "Extracted %d tool call(s) from plain-text content: %s",
                             len(tool_calls_acc),
