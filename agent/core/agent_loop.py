@@ -17,6 +17,10 @@ from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.codex_responses import codex_responses_completion, is_codex_responses_params
 from agent.core.llm_params import _resolve_llm_params
+from agent.core.ollama_client import (
+    ollama_chat_non_streaming,
+    ollama_chat_streaming,
+)
 from agent.core.overflow import is_context_overflow, is_silent_overflow
 from agent.core.prompt_caching import with_prompt_caching
 from agent.core.session import Event, OpType, Session
@@ -680,13 +684,12 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
 
     llm_params = _maybe_enable_ollama_think(llm_params)
 
-    # ── Ollama streaming fallback ───────────────────────────────────────
-    # litellm's ollama/ provider streams tool calls as raw text content
-    # (\u201c{"name": "bash", ...}\u201d) instead of structured delta.tool_calls.
-    # The synchronous path converts correctly, so fall back to non-streaming
-    # for Ollama models so tool calls are always parsed as structured calls.
+    # ── Ollama direct streaming ────────────────────────────────────────
+    # litellm's ollama/ provider corrupts streaming tool calls by placing
+    # ``index`` inside ``function.index`` instead of at the top level.
+    # We hit Ollama's /api/chat directly so tool calls work correctly.
     if (llm_params.get("model") or "").startswith("ollama/"):
-        return await _call_llm_non_streaming(session, messages, tools, llm_params)
+        return await _call_llm_ollama_direct(session, messages, tools, llm_params)
 
     if is_codex_responses_params(llm_params):
         t_start = time.monotonic()
@@ -844,6 +847,213 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     )
 
 
+def _messages_to_dict(messages: list) -> list[dict]:
+    """Convert litellm Message objects to plain dicts for Ollama API."""
+    return [m.model_dump(exclude_none=True) if hasattr(m, 'model_dump') else dict(m) for m in messages]
+
+
+async def _call_llm_ollama_direct(session: Session, messages, tools, llm_params) -> LLMResult:
+    """Stream chat from Ollama using a direct HTTP connection.
+
+    litellm corrupts the ``index`` field on Ollama tool calls during
+    streaming, so we bypass it entirely and call /api/chat ourselves.
+    """
+    msg_dicts = _messages_to_dict(messages)
+    t_start = time.monotonic()
+    llm_attempt = 0
+    while True:
+        try:
+            stream = ollama_chat_streaming(
+                model=llm_params["model"],
+                messages=msg_dicts,
+                tools=tools,
+                llm_params=llm_params,
+                timeout=600,
+            )
+            break
+        except ContextWindowExceededError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if not _is_transient_error(e):
+                raise
+            if session.is_cancelled:
+                logger.info("LLM call cancelled by user during retry")
+                return await _make_cancelled_result(session)
+            delay = _persistent_retry_delay(e, llm_attempt)
+            mins = delay // 60
+            secs = delay % 60
+            wait_msg = f"{mins}m{secs}s" if mins else f"{secs}s"
+            logger.warning(
+                "Transient Ollama error (attempt %d): %s — retrying in %s",
+                llm_attempt + 1, e, wait_msg,
+            )
+            state = "overloaded" if _is_cloud_overloaded(e) else "connection_error"
+            await session.send_event(Event(
+                event_type="tool_log",
+                data={"tool": "system", "log": f"{'☁️ Cloud overloaded' if state == 'overloaded' else '🔌 Connection error'} — retrying in {wait_msg} (attempt {llm_attempt + 1})…"},
+            ))
+            llm_attempt += 1
+            await asyncio.sleep(delay)
+            continue
+
+    full_content = ""
+    tool_calls_acc: dict[int, dict] = {}
+    token_count = 0
+    finish_reason: str | None = None
+    final_usage_chunk = None
+
+    async for chunk in stream:
+        if session.is_cancelled:
+            tool_calls_acc.clear()
+            break
+
+        choice = chunk.choices[0] if chunk.choices else None
+        if not choice:
+            if chunk.usage:
+                token_count = chunk.usage.total_tokens
+                final_usage_chunk = chunk
+            continue
+
+        delta = choice.delta
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+
+        if delta.content:
+            full_content += delta.content
+            await session.send_event(
+                Event(event_type="assistant_chunk", data={"content": delta.content})
+            )
+
+        if delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in tool_calls_acc:
+                    tool_calls_acc[idx] = {
+                        "id": "", "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    }
+                if tc_delta.id:
+                    tool_calls_acc[idx]["id"] = tc_delta.id
+                if tc_delta.function:
+                    if tc_delta.function.name:
+                        tool_calls_acc[idx]["function"]["name"] = tc_delta.function.name
+                    if tc_delta.function.arguments:
+                        tool_calls_acc[idx]["function"]["arguments"] = tc_delta.function.arguments
+
+        if chunk.usage:
+            token_count = chunk.usage.total_tokens
+            final_usage_chunk = chunk
+
+    # ── Empty response detection ──────────────────────────────────────
+    if not full_content and not tool_calls_acc:
+        raise RuntimeError("Model returned empty response with no tool calls")
+
+    usage = await telemetry.record_llm_call(
+        session,
+        model=llm_params.get("model", session.config.model_name),
+        response=final_usage_chunk,
+        latency_ms=int((time.monotonic() - t_start) * 1000),
+        finish_reason=finish_reason,
+    )
+
+    return LLMResult(
+        content=full_content or None,
+        tool_calls_acc=tool_calls_acc,
+        token_count=token_count,
+        finish_reason=finish_reason,
+        usage=usage,
+    )
+
+
+async def _call_llm_ollama_non_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
+    """Non-streaming chat from Ollama using direct HTTP connection."""
+    msg_dicts = _messages_to_dict(messages)
+    t_start = time.monotonic()
+    llm_attempt = 0
+    while True:
+        try:
+            result = await ollama_chat_non_streaming(
+                model=llm_params["model"],
+                messages=msg_dicts,
+                tools=tools,
+                llm_params=llm_params,
+                timeout=600,
+            )
+            break
+        except ContextWindowExceededError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if not _is_transient_error(e):
+                raise
+            if session.is_cancelled:
+                logger.info("LLM call cancelled by user during retry")
+                return await _make_cancelled_result(session)
+            delay = _persistent_retry_delay(e, llm_attempt)
+            mins = delay // 60
+            secs = delay % 60
+            wait_msg = f"{mins}m{secs}s" if mins else f"{secs}s"
+            logger.warning(
+                "Transient Ollama error (attempt %d): %s — retrying in %s",
+                llm_attempt + 1, e, wait_msg,
+            )
+            state = "overloaded" if _is_cloud_overloaded(e) else "connection_error"
+            await session.send_event(Event(
+                event_type="tool_log",
+                data={"tool": "system", "log": f"{'☁️ Cloud overloaded' if state == 'overloaded' else '🔌 Connection error'} — retrying in {wait_msg} (attempt {llm_attempt + 1})…"},
+            ))
+            llm_attempt += 1
+            await asyncio.sleep(delay)
+            continue
+
+    content = result._content
+    tool_calls = result._tool_calls
+    finish_reason = result.finish_reason
+
+    if content:
+        await session.send_event(
+            Event(event_type="assistant_message", data={"content": content})
+        )
+
+    # Build tool_calls_acc in same format as streaming
+    tool_calls_acc: dict[int, dict] = {}
+    if tool_calls:
+        for idx, tc in enumerate(tool_calls):
+            # Use index from tool call if present
+            tc_idx = tc.get("index", idx)
+            tool_calls_acc[tc_idx] = {
+                "id": tc.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": tc.get("function", {}).get("name", ""),
+                    "arguments": tc.get("function", {}).get("arguments", ""),
+                },
+            }
+
+    # ── Empty response detection ──────────────────────────────────────
+    if not content and not tool_calls_acc:
+        raise RuntimeError("Model returned empty response with no tool calls")
+
+    usage = await telemetry.record_llm_call(
+        session,
+        model=llm_params.get("model", session.config.model_name),
+        response=None,
+        latency_ms=int((time.monotonic() - t_start) * 1000),
+        finish_reason=finish_reason,
+    )
+
+    return LLMResult(
+        content=content,
+        tool_calls_acc=tool_calls_acc,
+        token_count=result.usage.total_tokens if result.usage else 0,
+        finish_reason=finish_reason,
+        usage=usage or result.usage,
+    )
+
+
 async def _call_llm_non_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM without streaming, emit assistant_message at the end."""
     if is_codex_responses_params(llm_params):
@@ -875,6 +1085,10 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
             finish_reason=result.finish_reason,
             usage=usage,
         )
+
+    # ── Ollama direct non-streaming ────────────────────────────────────
+    if (llm_params.get("model") or "").startswith("ollama/"):
+        return await _call_llm_ollama_non_streaming(session, messages, tools, llm_params)
 
     response = None
     _healed_effort = False
