@@ -63,6 +63,7 @@ export interface JobsUpgradeState {
 export type ActivityStatus =
   | { type: 'idle' }
   | { type: 'thinking' }
+  | { type: 'compacting' }
   | { type: 'tool'; toolName: string; description?: string; toolCallId?: string }
   | { type: 'waiting-approval' }
   | { type: 'streaming' }

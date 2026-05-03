@@ -345,6 +345,13 @@ async def _compact_and_notify(session: Session) -> None:
         "Compaction check: usage=%d, max=%d, threshold=%d, needs_compact=%s",
         old_usage, cm.model_max_tokens, cm.compaction_threshold, cm.needs_compaction,
     )
+    if cm.needs_compaction:
+        await session.send_event(
+            Event(
+                event_type="tool_log",
+                data={"tool": "system", "log": "Compacting context..."},
+            )
+        )
     await cm.compact(
         model_name=session.config.model_name,
         tool_specs=session.tool_router.get_tool_specs_for_llm(),
@@ -356,6 +363,12 @@ async def _compact_and_notify(session: Session) -> None:
         logger.warning(
             "Context compacted: %d -> %d tokens (max=%d, %d messages)",
             old_usage, new_usage, cm.model_max_tokens, len(cm.items),
+        )
+        await session.send_event(
+            Event(
+                event_type="tool_log",
+                data={"tool": "system", "log": f"Context compacted: {old_usage} -> {new_usage} tokens"},
+            )
         )
         await session.send_event(
             Event(

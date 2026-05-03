@@ -79,6 +79,8 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
       },
       onCompacted: (oldTokens: number, newTokens: number) => {
         logger.log(`Context compacted: ${oldTokens} -> ${newTokens} tokens`);
+        // Clear compacting status
+        updateSession(sessionId, { activityStatus: { type: 'thinking' } });
       },
       onPlanUpdate: (plan) => {
         const typed = plan as Array<{ id: string; content: string; status: 'pending' | 'in_progress' | 'completed' }>;
@@ -145,6 +147,12 @@ export function useAgentChat({ sessionId, isActive, onReady, onError, onSessionD
             });
             saveResearch(sessionId, allSteps.slice(-RESEARCH_MAX_STEPS), agent.stats);
           }
+          return;
+        }
+
+        // Compaction status
+        if (tool === 'system' && log.startsWith('Compacting context')) {
+          updateSession(sessionId, { activityStatus: { type: 'compacting' } });
           return;
         }
 

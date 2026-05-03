@@ -110,6 +110,7 @@ function findLatestRunningJobToolCallId(jobStatuses: Record<string, string>): st
 function statusLabel(status: ActivityStatus, jobStatus?: string): string {
   switch (status.type) {
     case 'thinking': return 'Thinking';
+    case 'compacting': return 'Compacting';
     case 'streaming': return 'Writing';
     case 'tool': {
       if (status.toolName === 'hf_jobs') {
