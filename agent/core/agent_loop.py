@@ -899,6 +899,8 @@ async def _call_llm_ollama_direct(session: Session, messages, tools, llm_params)
     """
     msg_dicts = _messages_to_dict(messages)
     logger.info("[OLLAMA_DIRECT] sending %d messages, model=%s", len(msg_dicts), llm_params.get("model", "?"))
+    for i, m in enumerate(msg_dicts):
+        logger.info("[OLLAMA_DIRECT] msg[%d] role=%s, content_len=%d, tc=%d", i, m.get("role"), len(m.get("content") or ""), len(m.get("tool_calls") or []))
     t_start = time.monotonic()
     llm_attempt = 0
     while True:
@@ -1417,6 +1419,13 @@ class Handlers:
                         finish_reason="cancelled",
                         usage={},
                     )
+                except Exception as llm_exc:
+                    logger.error(
+                        "[AGENT] LLM CALL RAISED: %s: %s",
+                        type(llm_exc).__name__, str(llm_exc)[:200],
+                        exc_info=True,
+                    )
+                    raise
                 finally:
                     session._current_llm_task = None
 
@@ -1786,7 +1795,10 @@ class Handlers:
 
             except Exception as e:
                 import traceback
-
+                logger.error(
+                    "[AGENT] OUTER EXCEPTION at iter=%d: %s: %s",
+                    iteration, type(e).__name__, str(e)[:200],
+                )
                 error_msg = _friendly_error_message(e)
                 error_str = str(e)
 
