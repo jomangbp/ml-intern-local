@@ -871,6 +871,10 @@ class SessionManager:
                 "When the user asks to proceed/start, perform concrete tool actions in this same turn; do not say you will do it in the next turn.]"
             ),
         ))
+        # Force re-calculation on next compaction check — the restored
+        # items were added outside add_message, so running_context_usage
+        # hasn't been updated and compaction won't trigger otherwise.
+        cm.running_context_usage = cm.model_max_tokens + 1
         return len(restored)
 
     @staticmethod

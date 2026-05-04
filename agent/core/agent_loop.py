@@ -898,14 +898,10 @@ async def _call_llm_ollama_direct(session: Session, messages, tools, llm_params)
     streaming, so we bypass it entirely and call /api/chat ourselves.
     """
     msg_dicts = _messages_to_dict(messages)
-    msg_count = len(msg_dicts)
-    last_role = msg_dicts[-1].get("role", "?") if msg_dicts else "empty"
-    logger.info(f"Ollama direct: {msg_count} messages, last role={last_role}, model={llm_params['model']}")
     t_start = time.monotonic()
     llm_attempt = 0
     while True:
         try:
-            logger.info(f"Ollama direct: starting stream (attempt {llm_attempt + 1})")
             stream = ollama_chat_streaming(
                 model=llm_params["model"],
                 messages=msg_dicts,
@@ -946,13 +942,9 @@ async def _call_llm_ollama_direct(session: Session, messages, tools, llm_params)
     token_count = 0
     finish_reason: str | None = None
     final_usage_chunk = None
-    chunk_count = 0
 
     try:
         async for chunk in stream:
-            chunk_count += 1
-            if chunk_count <= 3 or (chunk.choices and chunk.choices[0].finish_reason) or chunk.usage:
-                logger.info(f"Ollama direct: chunk #{chunk_count} fin={chunk.choices[0].finish_reason if chunk.choices else None} usage={chunk.usage is not None} content_len={len(chunk.choices[0].delta.content) if chunk.choices and chunk.choices[0].delta.content else 0}")
             if session.is_cancelled:
                 return await _make_cancelled_result(session)
 
