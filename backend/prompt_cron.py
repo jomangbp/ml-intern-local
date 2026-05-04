@@ -396,5 +396,15 @@ class PromptCronManager:
         _delete_cron_file(task_id)
         return True
 
+    async def delete(self, task_id: str) -> bool:
+        """Permanently delete a cron — cancel it first, then remove from memory."""
+        await self.cancel(task_id)
+        async with self._lock:
+            if task_id in self._tasks:
+                del self._tasks[task_id]
+            self._asyncio_tasks.pop(task_id, None)
+        _delete_cron_file(task_id)
+        return True
+
 
 prompt_cron_manager = PromptCronManager()

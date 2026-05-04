@@ -1034,6 +1034,26 @@ async def cancel_scheduler_task(
     return {"ok": ok, "output": output, "tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
 
 
+@router.delete("/scheduler/tasks/{task_id}")
+async def delete_scheduler_task(
+    task_id: str, user: dict = Depends(get_current_user)
+) -> dict:
+    """Permanently delete a local scheduler/watchdog or prompt cron task."""
+    from agent.tools.local_scheduler_tool import _delete_task_safe
+
+    prompt_task = await prompt_cron_manager.get(task_id)
+    if prompt_task:
+        ok = await prompt_cron_manager.delete(task_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"No such prompt cron task: {task_id}")
+        return {"ok": True, "output": f"Deleted prompt cron {task_id}.", "tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
+
+    output, ok = _delete_task_safe(task_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=output)
+    return {"ok": ok, "output": output, "tasks": await _all_scheduler_statuses(user_id=user["user_id"])}
+
+
 @router.delete("/session/{session_id}")
 async def delete_session(
     session_id: str, user: dict = Depends(get_current_user)

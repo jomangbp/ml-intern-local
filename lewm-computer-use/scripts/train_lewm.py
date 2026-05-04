@@ -389,6 +389,7 @@ def main():
     parser.add_argument("--action-dim", type=int, default=0, help="Action dim (0=auto-detect from data)")
     parser.add_argument("--lambd", type=float, default=0.09, help="SIGReg weight")
     parser.add_argument("--encoder-scale", default="tiny", choices=["tiny", "small"])
+    parser.add_argument("--dropout", type=float, default=0.1, help="Predictor dropout rate")
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -466,6 +467,7 @@ def main():
         history_size=args.ctx_len,
         action_dim=args.action_dim,
         encoder_scale=args.encoder_scale,
+        predictor_dropout=args.dropout,
     )
     
     n_params = count_parameters(model)

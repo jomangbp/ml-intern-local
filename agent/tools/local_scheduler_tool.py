@@ -69,6 +69,25 @@ def _task_paths(task_id: str) -> tuple[Path, Path, Path]:
     return config_path, status_path, cancel_path
 
 
+def _delete_task_safe(task_id: str) -> tuple[str, bool]:
+    """Cancel and remove all files for a local scheduler task."""
+    config_path, status_path, cancel_path = _task_paths(task_id)
+    if not status_path.exists():
+        return f"No such scheduled task: {task_id}", False
+    # Cancel runner if alive
+    status = _read_json(status_path)
+    runner_pid = status.get("runner_pid")
+    if runner_pid and _pid_is_alive(int(runner_pid)):
+        try:
+            os.kill(int(runner_pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    # Remove all files
+    for p in (config_path, status_path, cancel_path):
+        p.unlink(missing_ok=True)
+    return f"Deleted scheduled task {task_id}.", True
+
+
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")

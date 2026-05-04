@@ -185,45 +185,32 @@ def download_parquet_files(num_files: Optional[int] = None) -> List[Path]:
     local_dir = Path.home() / ".cache" / "mind2web_data"
     local_dir.mkdir(parents=True, exist_ok=True)
     
+    # Discover ALL parquet files across all splits
+    import requests
+    resp = requests.get("https://huggingface.co/api/datasets/osunlp/Multimodal-Mind2Web")
+    siblings = resp.json().get("siblings", [])
+    all_parquet = sorted([
+        s["rfilename"] for s in siblings
+        if s["rfilename"].endswith(".parquet")
+    ])
+    print(f"  Found {len(all_parquet)} parquet files total")
+    
     files = []
-    for i in range(27):  # train has 27 files
+    for i, filename in enumerate(all_parquet):
         if num_files and i >= num_files:
             break
         try:
             path = hf_hub_download(
                 repo_id="osunlp/Multimodal-Mind2Web",
-                filename=f"data/train-{i:05d}-of-00027.parquet",
+                filename=filename,
                 repo_type="dataset",
                 cache_dir=str(local_dir),
             )
             files.append(Path(path))
-            print(f"  [{i+1}/{'?' if not num_files else num_files}] "
-                  f"train-{i:05d}-of-00027.parquet")
+            print(f"  [{i+1}/{min(num_files or len(all_parquet), len(all_parquet))}] {filename.split('/')[-1][:50]}")
         except Exception as e:
-            # Try alternate filename pattern
-            try:
-                # List available files
-                import requests
-                resp = requests.get(
-                    "https://huggingface.co/api/datasets/osunlp/Multimodal-Mind2Web"
-                )
-                siblings = resp.json().get("siblings", [])
-                train_files = sorted([
-                    s["rfilename"] for s in siblings
-                    if "train" in s["rfilename"] and s["rfilename"].endswith(".parquet")
-                ])
-                if i < len(train_files):
-                    path = hf_hub_download(
-                        repo_id="osunlp/Multimodal-Mind2Web",
-                        filename=train_files[i],
-                        repo_type="dataset",
-                        cache_dir=str(local_dir),
-                    )
-                    files.append(Path(path))
-                    print(f"  [{i+1}] {train_files[i]}")
-            except Exception as e2:
-                print(f"  Skipping file {i}: {e2}")
-                break
+            print(f"  Skipping {filename}: {e}")
+            continue
     
     if not files:
         raise RuntimeError(

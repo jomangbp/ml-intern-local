@@ -19,6 +19,7 @@ import {
   Typography,
 } from '@mui/material';
 import CancelIcon from '@mui/icons-material/Cancel';
+import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ScheduleIcon from '@mui/icons-material/Schedule';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -313,6 +314,23 @@ export default function SchedulerDialog({ open, onClose, activeExecutionMode, ac
     }
   }, [refreshTasks]);
 
+  const deleteTask = useCallback(async (taskId: string) => {
+    if (!window.confirm(`Delete task ${taskId}? This cannot be undone.`)) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const res = await apiFetch(`/api/scheduler/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await parseApiError(res));
+      setMessage(`Deleted ${taskId}.`);
+      await refreshTasks();
+    } catch (e) {
+      setError(parseError(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshTasks]);
+
   const manualRefresh = useCallback(async () => {
     setBusy(true);
     setError('');
@@ -545,12 +563,17 @@ export default function SchedulerDialog({ open, onClose, activeExecutionMode, ac
                     <Stack direction="row" spacing={0.75} alignItems="center">
                       <Chip size="small" color={statusColor(task.status)} label={task.status || 'unknown'} />
                       {canCancel && (
-                        <Tooltip title="Cancel watchdog">
+                        <Tooltip title="Cancel">
                           <IconButton size="small" onClick={() => cancelTask(taskId)} disabled={busy}>
                             <CancelIcon fontSize="small" />
                           </IconButton>
                         </Tooltip>
                       )}
+                      <Tooltip title="Delete permanently">
+                        <IconButton size="small" onClick={() => deleteTask(taskId)} disabled={busy} sx={{ color: 'var(--error)' }}>
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
                     </Stack>
                   </Box>
                   <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--muted-text)' }}>
