@@ -898,6 +898,7 @@ async def _call_llm_ollama_direct(session: Session, messages, tools, llm_params)
     streaming, so we bypass it entirely and call /api/chat ourselves.
     """
     msg_dicts = _messages_to_dict(messages)
+    logger.info("[OLLAMA_DIRECT] sending %d messages, model=%s", len(msg_dicts), llm_params.get("model", "?"))
     t_start = time.monotonic()
     llm_attempt = 0
     while True:
@@ -1308,6 +1309,11 @@ class Handlers:
         errored = False
         max_iterations = session.config.max_iterations
         empty_response_retries = 0
+        logger.info(
+            "[AGENT] run_agent START: text=%r, model=%s, stream=%s, total_items=%d",
+            (text or "")[:80], session.config.model_name,
+            session.stream, len(session.context_manager.items),
+        )
 
         while max_iterations == -1 or iteration < max_iterations:
             # ── Cancellation check: before LLM call ──
@@ -1315,7 +1321,19 @@ class Handlers:
                 break
 
             # Compact before calling the LLM if context is near the limit
+            logger.info(
+                "[AGENT] run_agent iter=%d: before compact, usage=%d, max=%d, threshold=%d, items=%d",
+                iteration, session.context_manager.running_context_usage,
+                session.context_manager.model_max_tokens,
+                session.context_manager.compaction_threshold,
+                len(session.context_manager.items),
+            )
             await _compact_and_notify(session)
+            logger.info(
+                "[AGENT] run_agent iter=%d: after compact, usage=%d, items=%d",
+                iteration, session.context_manager.running_context_usage,
+                len(session.context_manager.items),
+            )
 
             # Doom-loop detection: break out of repeated tool call patterns
             doom_prompt = check_for_doom_loop(session.context_manager.items)
@@ -1397,6 +1415,11 @@ class Handlers:
                 tool_calls_acc = llm_result.tool_calls_acc
                 token_count = llm_result.token_count
                 finish_reason = llm_result.finish_reason
+                logger.info(
+                    "[AGENT] LLM result: content_len=%d, tool_calls=%d, finish=%s, tokens=%d",
+                    len(content or ""), len(tool_calls_acc or {}),
+                    finish_reason, token_count or 0,
+                )
 
                 # Detect silent overflow: model returned empty content with no tool calls
                 # This can happen when context is too large and the model gives up silently
